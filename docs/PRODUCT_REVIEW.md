@@ -142,3 +142,46 @@ The commercial next test remains one independent merchant and an authorized buye
 using a valuable service and recovery without founder intervention. The included
 invoice computation and automated tests do not establish demand, willingness to
 pay, institutional adoption or maintenance-free operation.
+
+## Applied in 0.4
+
+- Replace in-memory submission assumptions with durable intent, leased ownership
+  and original-identity recovery. A killed process after upstream acceptance is
+  an explicit test case; absence remains unknown and holds remain reserved.
+- Put the recovery action beside the payment's consequence: held, unknown or
+  confirmed. Pause another submission on the same connection until the original
+  is resolved. Show the scope and count of the bounded queue.
+- Add read-only RPC/indexing foundations with retained reorg evidence, a
+  signature-verifying ASGI interface and authenticated encrypted restoration.
+  Keep deployment enrollment and real financial authority separate from code.
+- Replace the sub-cent billing gap with exact usage accumulation and carried
+  invoice residuals. Preserve the distinction between invoice and collection.
+- Export a responsibility packet without private identity and report evidence as
+  unverified. Saved forms can never self-approve legal status or live money.
+- Keep the five existing destinations. Add no new product app, estate-wide gate,
+  paid host, hidden telemetry or compulsory intermediary. Use self-service
+  documentation, an executable recovery example and inbound contact.
+
+The 0.3 developer pre-release is now public at
+[hellabit/hellabit-gateway](https://github.com/hellabit/hellabit-gateway). The 0.4
+local upgrade is authorized for a separate verified source release after hardening.
+No further outbound prospecting or new spending is authorized. No commercial
+adoption, real settlement or operating approval is established by publication.
+
+### Additional adversarial pass before publication
+
+- Recheck a worker claim after a slow provider lookup and before a submission;
+  preserve a callback/reconciliation result that wins a race with the worker.
+- Bind reference webhook signatures to their provider and require an immutable
+  workspace/rail/provider association before an event can settle an intent.
+- Check finality and persist contradictions inside the same transaction as a
+  rewind/finalization decision, so a competing finality advance cannot be lost.
+- Apply one total request-body deadline; reject ambiguous token JSON and require
+  a recent signed authentication time for operator access.
+- Reject oversized snapshots during copying and damaged authenticated databases
+  before restore. Verify the operational audit chain in a recovery rehearsal.
+- Add a deterministic nine-file Google review bundle with original line numbers,
+  complete source hashes, explicit review coverage and unverified reviewer status.
+
+These are internal engineering findings with executable regressions. They are not
+an independent audit, legal review or evidence of a live settlement connection.

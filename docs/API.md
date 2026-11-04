@@ -1,8 +1,10 @@
 # Purchase API and authority
 
-All routes are under `/api/v1/workspaces/{workspace}`. API callers use a scoped
-sandbox bearer key. The owner console uses its loopback session and CSRF token.
-There is no public-server authentication or production exposure contract.
+All routes are under `/api/v1/workspaces/{workspace}`. The loopback console uses
+its owner session/CSRF token; its SDK interface also accepts scoped sandbox keys.
+The separate optional ASGI API verifies access-token signatures and local grants.
+It never accepts console cookies or sandbox bearer keys. The matrix below describes
+the loopback interface; the narrower deployment API is listed separately.
 
 | Action | Owner console | Merchant key | Customer-bound agent key |
 | --- | --- | --- | --- |
@@ -49,7 +51,9 @@ export are not a complete statement or backup.
 references and work inputs. It reports runtime versions, native precision and an
 internal consistency result. It makes no external settlement claim.
 
-CAD and USD use whole cents. Sub-cent CAD/USD per-call billing is not implemented.
+CAD and USD ledger postings use whole cents. The separate usage meter accumulates
+exact micro-units, closes completed UTC months and carries sub-cent residuals.
+It creates invoices without collection; it does not change ledger precision.
 Native test USDC and workspace test tokens use six decimals. The economics model
 must not be confused with supported per-call fiat postings or collectible revenue.
 
@@ -57,3 +61,32 @@ The `http.server` implementation is a loopback development server. It must not b
 exposed as a public payment service by adding a tunnel or TLS wrapper. See the
 [official Python server documentation](https://docs.python.org/3/library/http.server.html)
 and the [security contract](../SECURITY.md).
+
+## Optional ASGI interface
+
+Use [the exact enrollment procedure](OPERATIONS.md), not a tunnel around the
+owner console. Access tokens require pinned RSA keys, RS256, expected issuer and
+audience, key ID, subject, issuance/expiry and access-token purpose. Grants are
+local, expiring and revocable; workspace/admin token claims cannot add permission.
+No identity realm or public certificate is enrolled by the source release.
+
+| Role | Exposed capabilities | Restrictions |
+| --- | --- | --- |
+| Merchant | Own workspace, quote, reserve, lookup, registered run, operation/result read, funded refund | No funding, issuer, payout, principal or key-management mutation |
+| Agent | Assigned customer state, reserve, lookup, registered run and own results | Cannot reprice, refund, cross customers or inspect another workspace |
+| Read-only | Own workspace and result/operation reads | Every POST denied, including lookup POST |
+| Operator | Own workspace, payout queue and readiness reads | Signed MFA and recent auth_time required; every POST denied |
+
+`GET /api/health` is unauthenticated, contains no account data and explicitly
+states that live payments are disabled. Other paths need a bearer access token.
+Exact Host binding, no cookies/Origin, bounded JSON and one total body deadline, duplicate-field
+rejection and persistent per-principal rate limits apply. No webhook or settlement
+POST is exposed. The HMAC inbox is a backend library until an actual provider's
+authentication and event contract are enrolled.
+
+Owner-only loopback routes added in 0.4: `GET /ops`, `GET /readiness`,
+`GET /readiness/packet`, `POST /ops/{intent}/process`, `/interrupt`, `/reconcile`,
+`POST /readiness/recovery-drill`, and `POST /readiness/evidence`. Mutation bodies
+are exact-field validated. The three execution actions are synthetic only; the
+evidence route accepts a reference, document hash and expiry, never a verified
+flag. None can open the live submission boundary.

@@ -4,8 +4,10 @@ This is a new, isolated local foundation. The canonical owner checkout remains
 the containing Playground root. Do not alter other products, shared feeds,
 existing Hellabit sites, production bindings or provider accounts.
 
-The released Python service is standard-library only. Node dependencies are
-development tools for compiling and exercising contracts in a private EVM.
+The core loopback service is standard-library only. The optional ASGI API and
+encrypted recovery tools use the hash-locked Python dependencies; do not replace
+their signature, TLS or encryption libraries with custom cryptography. Node
+dependencies are development tools for compiling and exercising contracts in a private EVM.
 All monetary quantities use integers in the explicitly named asset's units.
 Never infer an asset from its display symbol or convert between currencies.
 

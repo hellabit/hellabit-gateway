@@ -69,6 +69,30 @@ try{
  check('A paid-out merchant balance disables an unfunded refund',await page.locator(`[data-op="${op}"][data-action="refund"]`).isDisabled()&&await page.getByText('Proceeds already paid out. A funded reversal is required.',{exact:true}).count()===1);
  check('Oversize payout explains the exact shortfall',(await page.locator('#payout-hint').textContent()).includes('0.01 CAD'));
  await click('#use-payout-available');check('Use available changes the payout only after an explicit action',await page.locator('#payout-amount').inputValue()==='0.49'&&!(await page.locator('#request-payout').isDisabled()));await page.fill('#payout-amount','0.50');
+ const priorPayouts=new Set((await snapshot()).payouts.map(p=>p.id));
+ await page.fill('#payout-amount','0.20');await click('#request-payout');
+ const firstRecovery=(await snapshot()).payouts.find(p=>!priorPayouts.has(p.id));priorPayouts.add(firstRecovery.id);
+ await click('#request-payout');const secondRecovery=(await snapshot()).payouts.find(p=>!priorPayouts.has(p.id));
+ await nav('connections');
+ await click(`[data-intent="${firstRecovery.intent_id}"][data-intent-action="interrupt"]`);
+ let recoverySnapshot=await snapshot();
+ check('Interrupted provider reply preserves the original payout and held proceeds',recoverySnapshot.payouts.find(p=>p.id===firstRecovery.id).state==='pending'&&recoverySnapshot.payouts.find(p=>p.id===firstRecovery.id).intent_state==='unknown');
+ check('Unknown payment exposes lookup and pauses another payment on the same connection',await page.locator(`[data-intent="${firstRecovery.intent_id}"][data-intent-action="reconcile"]`).isVisible()&&await page.locator(`[data-intent="${secondRecovery.intent_id}"][data-intent-action="process"]`).isDisabled()&&await page.locator('#readiness-unknown').textContent()==='1');
+ const paidBefore=recoverySnapshot.journal.filter(j=>j.kind==='payout-paid').length;
+ await click(`[data-intent="${firstRecovery.intent_id}"][data-intent-action="reconcile"]`);recoverySnapshot=await snapshot();
+ check('Original payment lookup records one settlement and clears the recovery action',recoverySnapshot.payouts.find(p=>p.id===firstRecovery.id).state==='paid'&&recoverySnapshot.journal.filter(j=>j.kind==='payout-paid').length===paidBefore+1&&await page.locator(`[data-intent="${firstRecovery.intent_id}"]`).count()===0);
+ check('Resolved uncertainty releases the next explicit test submission',!(await page.locator(`[data-intent="${secondRecovery.intent_id}"][data-intent-action="process"]`).isDisabled())&&await page.locator('#readiness-unknown').textContent()==='0');
+ await click(`[data-intent="${secondRecovery.intent_id}"][data-intent-action="process"]`);
+ check('Queued payout finishes after the earlier original identity is resolved',(await snapshot()).payouts.find(p=>p.id===secondRecovery.id).state==='paid');
+ const packetDownload=page.waitForEvent('download');await click('#responsibility-packet');
+ const packet=JSON.parse(fs.readFileSync(await (await packetDownload).path(),'utf8'));
+ check('Responsibility packet separates intended markets from legal and identity approval',packet.intended_markets.join(',')==='CA,US'&&!packet.operator_identity_included&&!packet.legal_determination_included&&!JSON.stringify(packet).includes(recoverySnapshot.workspace.id));
+ await click('#recovery-drill');
+ check('Console performs encrypted restore rehearsal without claiming production custody',(await page.locator('#action-message').textContent()).includes('Encrypted snapshot restored')&&(await page.locator('#action-message').textContent()).includes('custody'));
+ await page.locator('.readiness-panel details summary').click();
+ check('External responsibilities remain unresolved after recording connection drafts',await page.locator('#readiness-controls li').count()===10&&await page.getByText('Financial activation blocked',{exact:true}).isVisible());
+ await page.locator('.readiness-panel details summary').click();
+ await nav('work');await page.fill('#payout-amount','0.50');
  const usdc=asset(data,'usdc');await page.selectOption('#work-asset',usdc.id);await page.fill('#fund-amount','2.50');await click('#fund');
  data=await snapshot();check('USDC has its own six-decimal balance',asset(data,'usdc').balance===2500000&&asset(data,'bank').balance===900);
  await click('#reserve');data=await snapshot();op=newest(data).id;await click(`[data-op="${op}"][data-action="run"]`);
@@ -112,7 +136,7 @@ try{
  await page.fill('#economics-cost','2000');check('Economics calculator exposes losses as volume grows',await page.locator('#economics-result').getAttribute('data-positive')==='false'&&(await page.locator('#economics-result').textContent()).includes('1,100.00'));
  await page.fill('#economics-cost','200');
  check('Developer example uses a secret environment reference and original-key recovery',(await page.locator('#sdk-example').textContent()).includes('process.env.HELLABIT_MERCHANT_KEY')&&(await page.locator('#sdk-example').textContent()).includes('gateway.lookup'));
- check('Sub-cent fiat economics are explicitly separated from supported billing',(await page.locator('#precision-note').textContent()).includes('not implemented'));
+ check('Exact sub-cent metering is distinguished from whole-cent settlement and collection',(await page.locator('#precision-note').textContent()).includes('carries the remainder')&&(await page.locator('#precision-note').textContent()).includes('collects no invoices'));
  const diagnosticDownload=page.waitForEvent('download');await click('#download-diagnostics');const diagnosticFile=await diagnosticDownload,diagnosticText=fs.readFileSync(await diagnosticFile.path(),'utf8'),diagnostic=JSON.parse(diagnosticText);
  check('Redacted diagnostic export excludes secrets and identities',diagnostic.personal_data_included===false&&!diagnosticText.includes(secret)&&!diagnosticText.includes(data.workspace.id)&&diagnostic.runtime.sqlite);
  let releaseKey;const keyGate=new Promise(resolve=>releaseKey=resolve),keyPattern=/\/api\/v1\/workspaces\/[^/]+\/merchant-keys$/;let undisplayedKey;
@@ -141,6 +165,12 @@ try{
    if(width===390||width===1440)await capture(view+(width===390?'-mobile.png':'-desktop.png'));
   }
  }
+ await page.setViewportSize({width:390,height:844});await nav('connections');
+ await page.locator('.readiness-panel details summary').click();
+ const readinessTargets=await page.locator('.readiness-panel button:visible,.readiness-panel summary:visible').evaluateAll(nodes=>nodes.map(n=>n.getBoundingClientRect().height));
+ check('Phone recovery and responsibility controls retain touch targets',readinessTargets.every(h=>h>=43.9));
+ check('Expanded responsibilities stay inside the phone viewport',await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth));
+ await capture('recovery-mobile.png');await page.locator('.readiness-panel details summary').click();
  await nav('overview');
  await nav('work');await page.setViewportSize({width:390,height:844});
  const actionBounds=await page.locator('[data-action="download"]').first().boundingBox();

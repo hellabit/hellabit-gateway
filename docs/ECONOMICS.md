@@ -43,13 +43,30 @@ incident response and regulated responsibilities remain real work.
 ## Native precision and fee collection
 
 CAD and USD ledger postings are integer cents. A modeled USD 0.001 per-call fee
-cannot be posted individually as native USD in this implementation. Sub-cent fiat
-billing requires a separately specified exact accumulator, aggregation/rounding
-period, residual handling and refund allocation. That feature is not implemented.
-The calculator labels these scenarios as an economic model only. Native test USDC
+cannot be posted individually as native USD. The 0.4 usage meter accumulates
+exact integer micro-units under immutable terms and stable event identities,
+closes completed UTC months in order, and carries residual micro-units into the
+next whole-cent invoice. It does not debit customers or collect those invoices.
+Commercial refunds/credits need a separately agreed policy before collection.
+The calculator remains an illustrative economic model. Native test USDC
 has six-decimal units; its supported precision is not a conversion to fiat USD.
 
 A fee entry in a self-hosted ledger is not revenue collected by Hellabit. The
 open-source core charges no compulsory fee and has no hidden collection or usage
 telemetry. Any hosted usage service requires a separate chosen service, agreement,
 billable usage definition and actual collection mechanism.
+
+## Zero-spend distribution decision
+
+The current release spends nothing on new services and sends no further outbound
+prospecting. A complete README, runnable recovery example, reproducible checks,
+issue form and inbound contact make the software assessable without a sales call.
+No paid listing or API marketplace is assumed to supply buyers. Free distribution
+does not prove acquisition or remove support and infrastructure costs.
+
+The proposed first paid offer is operating one supported merchant-controlled
+configuration for a team that already has a settlement relationship. Price its
+base operation and usage from actual costs and responsibility before accepting
+payment. Keep deployment/help outside a tiny per-event margin unless that margin
+pays for the required work. No automatic fee, wallet or payment processor is
+activated by the open-source package.

@@ -51,6 +51,39 @@ class HttpTests(unittest.TestCase):
         self.assertEqual(self.request("GET", "/api/v1/workspaces/" + other, headers=self.bearer)[0], 403)
         self.assertEqual(self.request("GET", self.base, headers=self.bearer)[0], 200)
 
+    def test_interrupted_payout_reply_recovers_original_payment_once_through_console_api(self):
+        self.assertEqual(self.post("sandbox/fund",{"customer":"agent-01","asset":"CAD","amount":1000,"reference":"recovery-fund"})[0],200)
+        quote=self.post("quotes",{"asset":"CAD","amount":1000,"fee":10})[1]
+        op=self.post("operations",{"customer":"agent-01","quote":quote["quote"],"key":"recovery-work"})[1]
+        self.post("operations/"+op["id"]+"/run",{})
+        payout=self.post("payouts",{"asset":"CAD","amount":50,"recipient":"synthetic-merchant","key":"recovery-payout"})[1]
+        route="ops/"+payout["intent"]
+        interrupted=self.post(route+"/interrupt",{})[1]
+        self.assertEqual(interrupted["intent"]["state"],"unknown")
+        observed=json.loads(self.request("GET",self.base+"/readiness",headers=self.owner)[2])
+        self.assertEqual(observed["machine_observations"]["unknown_or_overdue_submissions"],1)
+        self.assertEqual(self.post("payouts/"+payout["id"]+"/confirm",{"payment_reference":"replacement"})[0],409)
+        self.assertEqual(self.post(route+"/reconcile",{})[1]["state"],"confirmed")
+        self.assertEqual(self.post(route+"/reconcile",{})[1]["state"],"confirmed")
+        with self.book.db() as db:
+            self.assertEqual(db.execute("SELECT COUNT(*) FROM journals WHERE kind='payout-paid'").fetchone()[0],1)
+        self.assertTrue(self.book.reconcile(self.tenant)["ok"])
+
+    def test_recovery_and_readiness_are_owner_only_and_cannot_be_self_approved(self):
+        for route in ("ops","readiness","readiness/packet"):
+            self.assertEqual(self.request("GET",self.base+"/"+route,headers=self.bearer)[0],403)
+        evidence={"control":"entity","reference":"reported-entity","document_hash":"a"*64,"expires":self.book.clock()+3600}
+        self.assertEqual(self.post("readiness/evidence",evidence,owner=False)[0],403)
+        self.assertEqual(self.post("readiness/evidence",{**evidence,"verified":True})[0],400)
+        self.assertFalse(self.post("readiness/evidence",evidence)[1]["externally_verified"])
+        packet=json.loads(self.request("GET",self.base+"/readiness/packet",headers=self.owner)[2])
+        self.assertFalse(packet["operator_identity_included"])
+        self.assertNotIn(self.tenant,json.dumps(packet));self.assertNotIn(self.key,json.dumps(packet))
+        self.assertEqual(self.post("readiness/recovery-drill",{},owner=False)[0],403)
+        drill=self.post("readiness/recovery-drill",{})
+        self.assertEqual(drill[0],200);self.assertTrue(drill[1]["encrypted"])
+        self.assertFalse(drill[1]["production_key_custody_established"])
+
     def test_key_management_is_owner_only_and_revocation_takes_effect_immediately(self):
         self.assertEqual(self.request('GET', self.base+'/keys', headers=self.bearer)[0], 403)
         key = self.post('merchant-keys', {})[1]

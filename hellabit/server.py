@@ -16,6 +16,8 @@ from .ledger import Error, Ledger, canonical, identifier
 from .issuer import Issuer
 from .rails import SandboxBank, sandbox_usdc_funding
 from .payouts import Payouts
+from .operations import Operations
+from .readiness import Readiness
 from . import __version__
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -53,6 +55,8 @@ class Server(ThreadingHTTPServer):
         self.writer_lock = os.fdopen(os.open(lock_path, os.O_CREAT | os.O_RDWR | getattr(os, "O_NOFOLLOW", 0), 0o600), "a")
         try:
             fcntl.flock(self.writer_lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            Operations(book)
+            Readiness(book)
             super().__init__(("127.0.0.1", port), Handler)
         except BaseException:
             self.writer_lock.close(); raise
@@ -171,7 +175,7 @@ class Handler(BaseHTTPRequestHandler):
                 return
             if not route.startswith(base + "/"): raise Error("route_not_found", 404)
             rest = route[len(base) + 1:].split("/"); tenant = identifier(rest[0]); tail = "/".join(rest[1:])
-            owner_only = tail.startswith("sandbox/") or tail.startswith("issuer/") or tail.startswith("enroll/") or tail.startswith("payouts") or tail.startswith("merchant-keys") or tail in ("keys", 'diagnostics')
+            owner_only = tail.startswith("sandbox/") or tail.startswith("issuer/") or tail.startswith("enroll/") or tail.startswith("payouts") or tail.startswith("merchant-keys") or tail.startswith("ops/") or tail.startswith("readiness/") or tail in ("keys", 'diagnostics','ops','readiness')
             principal = self._authorize(tenant, owner_only=owner_only)
             book, issuer = self.server.book, Issuer(self.server.book)
             if principal["role"] == "agent" and tail:
@@ -187,7 +191,24 @@ class Handler(BaseHTTPRequestHandler):
                     raise Error("agent_scope_forbidden", 403)
             if not mutation:
                 if not tail:
-                    self._reply(book.agent_state(tenant, principal["customer"]) if principal["role"] == "agent" else {**book.snapshot(tenant), "issuer": issuer.state(tenant)}); return
+                    if principal["role"]=="agent":
+                        self._reply(book.agent_state(tenant,principal["customer"]));return
+                    snapshot={**book.snapshot(tenant),"issuer":issuer.state(tenant)}
+                    if principal["role"]=="owner":
+                        Operations(book)
+                        with book.db() as db:
+                            ids=[p["id"] for p in snapshot["payouts"]]
+                            marks=",".join("?" for _ in ids)
+                            intents={r["payout"]:dict(r) for r in db.execute(
+                                "SELECT payout,id,state FROM execution_intents WHERE tenant=? AND payout IN("+marks+")",
+                                (tenant,*ids))} if ids else {}
+                        for payout in snapshot["payouts"]:
+                            info=intents.get(payout["id"],{})
+                            payout["intent_id"]=info.get("id");payout["intent_state"]=info.get("state")
+                    self._reply(snapshot); return
+                if tail=='ops':self._reply(Operations(book).list(tenant));return
+                if tail=='readiness':self._reply(Readiness(book).report(tenant));return
+                if tail=='readiness/packet':self._reply(Readiness(book).packet(tenant));return
                 if tail == "reconcile": self._reply(book.reconcile(tenant)); return
                 if tail == 'keys': self._reply(book.keys(tenant)); return
                 if tail == 'diagnostics':
@@ -265,6 +286,27 @@ class Handler(BaseHTTPRequestHandler):
             elif tail == "payouts":
                 fields(body, ["asset", "amount", "recipient", "key"], ["source"])
                 result = Payouts(book).request(tenant, **body)
+            elif tail.startswith("ops/") and tail.count("/")==2:
+                fields(body,[]);_,intent,action=tail.split("/");identifier(intent)
+                if action not in ("process","interrupt","reconcile"):raise Error("route_not_found",404)
+                operations=Operations(book);operations.get(tenant,intent)
+                from .fixtures import SandboxProvider
+                def lost_reply():raise TimeoutError("Synthetic reply interrupted after acceptance")
+                provider=SandboxProvider(book.path.with_name(book.path.name+".sandbox-provider.sqlite3"),
+                    after_accept=lost_reply if action=="interrupt" else None)
+                if action in ("process","interrupt"):result=operations.process_one(tenant,provider,intent=intent)
+                elif action=="reconcile":result=operations.reconcile(tenant,intent,provider)
+                else:raise Error("route_not_found",404)
+            elif tail=='readiness/recovery-drill':
+                fields(body,[])
+                try:
+                    import cryptography
+                    from .backup import recovery_drill
+                except ImportError:raise Error("optional_api_tools_not_configured",423) from None
+                result=recovery_drill(book)
+            elif tail=='readiness/evidence':
+                fields(body,["control","reference","document_hash","expires"])
+                result=Readiness(book).record(tenant,**body)
             elif tail.startswith("payouts/") and tail.count("/") == 2 and tail.endswith("/confirm"):
                 fields(body, ["payment_reference"])
                 result = Payouts(book).sandbox_confirm(tenant, tail.split("/")[1], body["payment_reference"])

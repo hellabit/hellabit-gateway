@@ -18,6 +18,7 @@ import sys
 import tempfile
 import time
 import zipfile
+import urllib.request
 
 ROOT = Path(__file__).resolve().parents[1]
 PRIVATE, EVIDENCE, RELEASE = ROOT / ".private", ROOT / "evidence", ROOT / "release"
@@ -72,20 +73,21 @@ def dependency_inventory():
         packages.append({"path": name, "version": record.get("version"), "license": record.get("license"),
                          "integrity": record.get("integrity"), "source": record.get("resolved")})
     write_json(ROOT / "DEPENDENCIES.json", {"schema": "hellabit.dependencies.v1", "pythonMinimum": "3.11",
-        "pythonRuntimePackages": [], "nodeDevelopmentVersion": "24.22.1", "packageLockSha256": sha((ROOT / "package-lock.json").read_bytes()),
+        "pythonRuntimePackages": [], "pythonRuntimeScope": "standard-library core console",
+        "optionalPythonApi": {"inventory": "API-DEPENDENCIES.json", "requirements": "requirements-api.txt",
+            "lockSha256": sha((ROOT / "requirements-api.txt").read_bytes())},
+        "nodeDevelopmentVersion": "24.22.1", "packageLockSha256": sha((ROOT / "package-lock.json").read_bytes()),
         "packages": packages})
 
 
 def source_files():
-    names = ["README.md", "LICENSE", "NOTICE", "SECURITY.md", "AGENTS.md", "package.json", "package-lock.json", "DEPENDENCIES.json", ".gitignore"]
-    files = {name: (ROOT / name).read_bytes() for name in names}
-    for folder in ["hellabit", "web", "sdk", "contracts", "tests", "scripts", "docs", "examples", "licenses", ".github"]:
-        for p in sorted((ROOT / folder).rglob("*")):
-            if not p.is_file() or "__pycache__" in p.parts or p.suffix == ".pyc": continue
-            name = p.relative_to(ROOT).as_posix()
-            if name == "scripts/register_preview.py": continue
-            if p.is_symlink(): raise RuntimeError("Source symlink is not portable")
-            files[name] = p.read_bytes()
+    sys.path.insert(0,str(ROOT))
+    from hellabit.readiness import source_names
+    files={}
+    for name in sorted(source_names(ROOT)):
+        p=ROOT/name
+        if p.is_symlink() or not p.resolve().is_relative_to(ROOT.resolve()):raise RuntimeError("Source symlink is not portable")
+        files[name]=p.read_bytes()
     for name, content in files.items():
         if len(content) > 2_000_000: raise RuntimeError("Unexpected source file size: " + name)
         if (str(Path.home()).encode() + b"/") in content or re.search(rb"-----BEGIN (?:[A-Z ]+ )?PRIVATE KEY-----", content):
@@ -128,6 +130,7 @@ def main():
     lock = open(PRIVATE / "verify.lock", "a")
     fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
     receipt = {"schema": "hellabit.terminal-result.v1", "mode": "local-foundation", "ok": False,
+        "version": json.loads((ROOT / "package.json").read_text())["version"],
         "productionReady": False, "livePaymentsEnabled": False, "externalTransactions": 0, "realStablecoinsIssued": False}
     env = {"PATH": os.defpath, "LANG": "en_US.UTF-8", "PYTHONPATH": str(ROOT), "PYTHONDONTWRITEBYTECODE": "1"}
     try:
@@ -142,6 +145,29 @@ def main():
                 raise RuntimeError("Unsafe local toolchain enrollment")
             config = json.loads(config_path.read_text())
         else: config = {}
+        if not config.get("apiPython"):
+            raise RuntimeError("Optional API verification tools missing; run python3 scripts/bootstrap_api.py once")
+        if (config.get("apiRequirementsSha256") != sha((ROOT / "requirements-api.txt").read_bytes()) or
+                config.get("apiDependenciesSha256") != sha((ROOT / "API-DEPENDENCIES.json").read_bytes())):
+            raise RuntimeError("Optional API dependency lock changed; rerun its bounded bootstrap")
+        api_python = enrolled_tool("apiPython", sys.executable, config)
+        api_packages = json.loads((ROOT / "API-DEPENDENCIES.json").read_text())["packages"]
+        probe = "import importlib.metadata,json;print(json.dumps({n:importlib.metadata.version(n) for n in " + repr([p["name"] for p in api_packages]) + "}))"
+        installed = json.loads(subprocess.check_output([api_python, "-c", probe], cwd=ROOT, env=env, text=True, timeout=15))
+        if any(installed[p["name"]] != p["version"] for p in api_packages):
+            raise RuntimeError("Optional API installed versions do not match the lock")
+        query = {"queries": [{"package": {"name": p["name"], "ecosystem": "PyPI"}, "version": p["version"]} for p in api_packages]}
+        request = urllib.request.Request("https://api.osv.dev/v1/querybatch", data=json.dumps(query).encode(),
+                                         headers={"Content-Type": "application/json"})
+        with urllib.request.urlopen(request, timeout=20) as response:
+            advisory = json.load(response)
+        if len(advisory.get("results", [])) != len(api_packages):
+            raise RuntimeError("Python dependency advisory response could not be verified")
+        write_json(EVIDENCE / "python-dependency-audit.json", {"source": "https://api.osv.dev/v1/querybatch",
+            "lockSha256": sha((ROOT / "requirements-api.txt").read_bytes()), "report": advisory})
+        if any(item.get("vulns") for item in advisory["results"]):
+            raise RuntimeError("Python dependency advisory blocks this source checkpoint")
+        receipt["pythonApiPackages"], receipt["pythonDependencyAdvisories"] = len(api_packages), 0
         node = enrolled_tool("node", "node", config)
         openssl = enrolled_tool("openssl", "openssl", config)
         npm = enrolled_tool("npm", "npm", config)
@@ -160,7 +186,7 @@ def main():
         receipt["dependencyAdvisories"] = vulnerabilities
         receipt["dependencyLockSha256"] = sha((ROOT / "package-lock.json").read_bytes())
         print(json.dumps({"stage": "core-and-api", "mode": "offline"}), flush=True)
-        output = run("python-tests", [sys.executable, "-m", "unittest", "discover", "-s", "tests", "-p", "test_*.py", "-q"], env)
+        output = run("python-tests", [api_python, "-m", "unittest", "discover", "-s", "tests", "-p", "test_*.py", "-q"], env)
         receipt["pythonTests"] = int(re.search(r"Ran (\d+) tests?", output).group(1))
         print(json.dumps({"stage": "contracts-and-sdk"}), flush=True)
         run("contracts", [node, "tests/contracts.mjs"], env)
@@ -176,7 +202,7 @@ def main():
                 if sha((library / "package.json").read_bytes()) != record["package_sha256"]: raise RuntimeError("Browser library binding changed")
                 browser_env["HELLABIT_PLAYWRIGHT"] = str(library)
             with tempfile.TemporaryDirectory(prefix="hellabit-browser-") as tmp:
-                child = subprocess.Popen([sys.executable, "-m", "hellabit.server", "--demo", "--state", str(Path(tmp) / "ledger.sqlite3")], cwd=ROOT, env=env, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+                child = subprocess.Popen([api_python, str(ROOT / "scripts/run.py"), "--demo", "--state", str(Path(tmp) / "ledger.sqlite3")], cwd=ROOT, env=env, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
                 try:
                     selector = selectors.DefaultSelector(); selector.register(child.stdout, selectors.EVENT_READ)
                     if not selector.select(10): raise RuntimeError("Browser proof server did not start")
@@ -212,6 +238,8 @@ def main():
 import tempfile
 from hellabit.ledger import Ledger
 from hellabit.rails import SandboxBank
+from hellabit.readiness import local_build
+assert local_build()['status']=='packaged-source-matches-proof'
 with tempfile.TemporaryDirectory() as state:
  book=Ledger(Path(state)/'ledger.sqlite3')
  tenant=book.create_tenant('Portable Merchant')['tenant']
