@@ -20,3 +20,20 @@ jobs:
       - run: npm ci --ignore-scripts --no-audit --no-fund
       - run: npx playwright install --with-deps chromium
       - run: python3 scripts/verify.py
+      - name: Report verification failure
+        if: failure()
+        run: |
+          python3 - <<'PY'
+          import re
+          import sqlite3
+          from pathlib import Path
+          print('Loaded SQLite:', sqlite3.sqlite_version)
+          for name in ('evidence/terminal-result.json', 'evidence/python-tests.log', 'evidence/contracts.log', 'evidence/sdk.log', 'evidence/browser.log'):
+              path = Path(name)
+              if path.is_file():
+                  text = path.read_text(errors='replace')[-16000:]
+                  text = re.sub(r'[A-Za-z0-9_-]{32,}', '[redacted-long-token]', text)
+                  text = re.sub(r'[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}', '[redacted-email]', text)
+                  print(name)
+                  print(text)
+          PY
