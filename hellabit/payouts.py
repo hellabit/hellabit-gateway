@@ -5,7 +5,10 @@ from .rails import SandboxBank
 
 
 class Payouts:
-    def __init__(self, ledger): self.ledger = ledger
+    def __init__(self, ledger):
+        self.ledger = ledger
+        from .operations import Operations
+        self.operations = Operations(ledger)
 
     def request(self, tenant, asset, amount, recipient, key, source="merchant"):
         units(amount); identifier(recipient); identifier(key)
@@ -19,13 +22,15 @@ class Payouts:
             old = db.execute("SELECT * FROM payouts WHERE tenant=? AND key_hash=?", (tenant, key_hash)).fetchone()
             if old:
                 if old["request_hash"] != request_hash: raise Error("payout_idempotency_conflict")
-                return {**dict(old), "replayed": True}
+                intent=db.execute("SELECT id FROM execution_intents WHERE tenant=? AND payout=?",(tenant,old["id"])).fetchone()
+                return {**dict(old), "intent":intent["id"] if intent else None,"replayed": True}
             if self.ledger._balance(db, tenant, asset, source) < amount:
                 raise Error("insufficient_payout_balance")
             payout = "pay_" + secrets.token_hex(12)
             db.execute("INSERT INTO payouts(tenant,id,asset,amount,source,recipient,state,key_hash,request_hash,payment_reference) VALUES(?,?,?,?,?,?,?,?,?,?)", (tenant, payout, asset, amount, source, recipient, "pending", key_hash, request_hash, None))
             self.ledger._post(db, tenant, "payout-reserved", payout, asset, [(source, -amount), ("payout:" + payout, amount)])
-            return {"id": payout, "state": "pending", "amount": amount, "asset": asset}
+            intent = self.operations.enqueue(db, tenant, payout, asset, amount, recipient)
+            return {"id": payout, "state": "pending", "amount": amount, "asset": asset, "intent": intent}
 
     def sandbox_confirm(self, tenant, payout, reference):
         identifier(payout); identifier(reference)
@@ -35,6 +40,9 @@ class Payouts:
             if row["state"] == "paid":
                 if row["payment_reference"] != reference: raise Error("payout_payment_conflict")
                 return {"id": payout, "state": "paid", "replayed": True}
+            intent = db.execute("SELECT state FROM execution_intents WHERE tenant=? AND payout=?", (tenant, payout)).fetchone()
+            if intent and intent["state"] in ("submitting", "unknown"):
+                raise Error("reconcile_existing_submission", 409)
             rail = self.ledger.asset(db, tenant, row["asset"])["rail"]
             if rail == "bank":
                 bank = SandboxBank(self.ledger)
@@ -42,7 +50,32 @@ class Payouts:
                 proof = bank.verify(body, tenant, "payout:" + payout, row["asset"], row["amount"], "debit")["proof_hash"]
             else:
                 proof = digest({"mode": "sandbox", "payout": payout, "asset": row["asset"], "amount": row["amount"], "recipient": row["recipient"], "reference": reference})
-            self.ledger.consume_rail_event(db, tenant, rail, reference, "merchant-payout", proof)
-            self.ledger._post(db, tenant, "payout-paid", payout, row["asset"], [("payout:" + payout, -row["amount"]), ("clearing:" + rail, row["amount"])], {"proof_hash": proof, "mode": "sandbox"})
-            db.execute("UPDATE payouts SET state='paid',payment_reference=? WHERE id=?", (reference, payout))
-            return {"id": payout, "state": "paid", "mode": "sandbox"}
+            result = self._paid_tx(db, tenant, payout, reference, proof)
+            db.execute("""UPDATE execution_intents SET state='confirmed',reference=?,evidence_hash=?,
+                lease_hash=NULL,lease_until=NULL,updated=? WHERE tenant=? AND payout=?""",
+                (reference, proof, self.ledger.clock(), tenant, payout))
+            return result
+
+    def _paid_tx(self, db, tenant, payout, reference, proof):
+        row = db.execute("SELECT * FROM payouts WHERE tenant=? AND id=?", (tenant, payout)).fetchone()
+        if not row: raise Error("payout_not_found", 404)
+        if row["state"] == "paid":
+            if row["payment_reference"] != reference: raise Error("payout_payment_conflict")
+            return {"id": payout, "state": "paid", "replayed": True}
+        if row["state"] != "pending": raise Error("payout_not_pending")
+        rail = self.ledger.asset(db, tenant, row["asset"])["rail"]
+        self.ledger.consume_rail_event(db, tenant, rail, reference, "merchant-payout", proof)
+        self.ledger._post(db, tenant, "payout-paid", payout, row["asset"],
+            [("payout:" + payout, -row["amount"]), ("clearing:" + rail, row["amount"])],
+            {"proof_hash": proof, "mode": "sandbox"})
+        db.execute("UPDATE payouts SET state='paid',payment_reference=? WHERE id=?", (reference, payout))
+        return {"id": payout, "state": "paid", "mode": "sandbox"}
+
+    def _failed_tx(self, db, tenant, payout, reference, proof):
+        row = db.execute("SELECT * FROM payouts WHERE tenant=? AND id=?", (tenant, payout)).fetchone()
+        if not row or row["state"] != "pending": raise Error("payout_not_pending")
+        self.ledger._post(db, tenant, "payout-failed", payout, row["asset"],
+            [("payout:" + payout, -row["amount"]), (row["source"], row["amount"])],
+            {"proof_hash": proof, "mode": "sandbox", "provider_reference": reference})
+        db.execute("UPDATE payouts SET state='failed',payment_reference=? WHERE id=?", (reference, payout))
+        return {"id": payout, "state": "failed", "mode": "sandbox"}

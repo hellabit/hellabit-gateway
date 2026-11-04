@@ -1,8 +1,9 @@
 export interface Quote {quote:string;asset:string;amount:number;fee:number;resource:string;input_hash:string|null;expires_in:number}
 export interface Operation {id:string;asset:string;amount:number;fee:number;state:'reserved'|'uncertain'|'committed'|'released';result_hash:string|null;replayed?:boolean}
 export class HellabitError extends Error {code:string;status:number}
+export type HellabitAuthentication = {apiKey:string;getAccessToken?:never}|{apiKey?:never;getAccessToken:(signal:AbortSignal)=>string|Promise<string>};
 export class Hellabit {
-  constructor(options:{baseURL:string;apiKey:string;fetch?:typeof fetch;timeout?:number});
+  constructor(options:{baseURL:string;fetch?:typeof fetch;timeout?:number}&HellabitAuthentication);
   status(tenant:string):Promise<Record<string,unknown>>;
   quote(tenant:string,price:{asset:string;amount:number;fee:number;resource?:string;input?:Record<string,unknown>}):Promise<Quote>;
   reserve(tenant:string,operation:{customer:string;quote:string;key:string}):Promise<Operation>;

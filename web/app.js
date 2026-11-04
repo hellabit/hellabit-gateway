@@ -24,7 +24,9 @@ const errors = {
   refund_requires_funded_reversal: 'Proceeds have already been paid out. Restore the merchant and fee balances before refunding.',
   operation_not_found: 'No operation was found for this request key.',
   invalid_identifier: 'Use letters, numbers, dots, colons, underscores or hyphens in references.',
-  invalid_workspace_name: 'Use 2–60 letters, numbers, spaces or ordinary business-name punctuation.'
+  invalid_workspace_name: 'Use 2–60 letters, numbers, spaces or ordinary business-name punctuation.',
+  optional_api_tools_not_configured: 'Set up the optional API tools to run encrypted recovery checks.',
+  reconcile_existing_submission: 'Check the original payment in Settlement planning. Its existing hold is preserved.'
 };
 function remember() { try { sessionStorage.setItem('hellabit-view', JSON.stringify({tenant:state.tenant, asset:state.asset, view:state.view})); } catch {} }
 async function api(path, {method='GET', body}={}) {
@@ -72,9 +74,9 @@ function jump(view, focus=false) {
 function focusIdentity(element) {
   if(!element || element===document.body) return null;
   if(element.id) return '#'+CSS.escape(element.id);
-  for(const attribute of ['data-op','data-revoke-key','data-asset','data-payout','data-merchant-payout']) {
+  for(const attribute of ['data-op','data-revoke-key','data-asset','data-payout','data-merchant-payout','data-intent']) {
     const value=element.getAttribute(attribute);
-    if(value) return `[${attribute}="${CSS.escape(value)}"]` + (element.dataset.action ? `[data-action="${CSS.escape(element.dataset.action)}"]` : '');
+    if(value) return `[${attribute}="${CSS.escape(value)}"]` + (element.dataset.action ? `[data-action="${CSS.escape(element.dataset.action)}"]` : element.dataset.intentAction ? `[data-intent-action="${CSS.escape(element.dataset.intentAction)}"]` : '');
   }
   return null;
 }
@@ -101,11 +103,13 @@ async function workspaces(preferred) {
 }
 async function refresh() {
   if(!state.tenant) return;
-  const [data, keys]=await Promise.all([api(base()),api(base()+'/keys')]);
-  state.data=data; state.keys=keys.keys;
+  const tenant=state.tenant;
+  const [data,keys,readiness,ops]=await Promise.all([api(base()),api(base()+'/keys'),api(base()+'/readiness'),api(base()+'/ops')]);
+  if(tenant!==state.tenant)return;
+  state.data=data;state.keys=keys.keys;state.readiness=readiness;state.ops=ops;
   if(!data.assets.some(a => a.id===state.asset)) state.asset='CAD';
   [state.activity,state.allActivity]=await Promise.all([api(base()+'/activity/'+state.asset),state.allOperations?api(base()+'/activity/all'):Promise.resolve(null)]);
-  render(); remember();
+  render(); renderReadiness(); remember();
 }
 function renderJourney() {
   const d=state.data, a=selected(), ops=state.activity.operations.filter(op=>op.asset===a.id);
@@ -120,8 +124,9 @@ function renderJourney() {
   $('#next-action').textContent=action+' ↗'; $('#next-action').dataset.jump=(!funded&&a.rail==='issuer')?'issuer':'work';
   $('#journey').innerHTML=[['Budget',funded],['Reserve',held||delivered],['Deliver',delivered]].map(([name,done],index)=>`<li class="${done?'done':''}"><span>${done?'✓':'0'+(index+1)}</span>${name}</li>`).join('');
   const uncertain=d.operation_counts.uncertain||0;
-  $('#attention').hidden=!uncertain;
-  $('#attention').innerHTML=`<div><strong>${uncertain} unknown outcome${uncertain===1?'':'s'} need${uncertain===1?'s':''} review.</strong><span>Funds stay held until you record what happened.</span></div><button class="quiet" id="review-unknown">Review held work in all assets ↗</button>`;
+  const payments=state.readiness?.machine_observations.unknown_or_overdue_submissions||0,total=uncertain+payments;
+  $('#attention').hidden=!total;
+  $('#attention').innerHTML=`<div><strong>${total} unknown outcome${total===1?'':'s'} need${total===1?'s':''} review.</strong><span>Funds stay held until you record what happened.</span></div><div class="readiness-actions">${uncertain?'<button class="quiet" id="review-unknown">Review held work in all assets ↗</button>':''}${payments?'<button class="quiet" data-jump="connections">Check original payments ↗</button>':''}</div>`;
 }
 function operationActions(op) {
   const prefix=`data-op="${esc(op.id)}"`;
@@ -157,7 +162,7 @@ function render() {
   const names={bank:['Bank money','CAD and USD'],usdc:['USDC','Native token · Base Sepolia'],issuer:['Your currency',issuer.name]};
   $('#rail-summary').innerHTML=Object.entries(names).map(([rail,[name,detail]],i)=>`<div class="rail-row"><span class="rail-icon">${i+1}</span><div class="rail-info"><strong>${esc(name)}</strong><small>${esc(detail)}</small></div><span class="rail-status">${d.enrollments.some(e=>e.rail===rail)?'SAVED · UNVERIFIED':'NOT CONNECTED'}</span></div>`).join('');
   renderActivity();
-  $('#payouts').innerHTML=d.payouts.length?`<div class="table-wrap"><table><thead><tr><th>Payout / recipient</th><th>Amount</th><th>State</th><th>Action</th></tr></thead><tbody>${d.payouts.map(p=>{const asset=d.assets.find(x=>x.id===p.asset);return `<tr><td class="hash">${esc(p.id.slice(0,16))}…<small class="cell-note">${esc(p.recipient)}</small></td><td class="amount">${money(p.amount,asset)}</td><td><span class="pill">${p.state==='paid'?'Simulated payout recorded':'Awaiting simulated settlement'}</span></td><td>${p.state==='pending'?`<button class="quiet" data-merchant-payout="${esc(p.id)}">Record test settlement ↗</button>`:'Test settlement recorded'}</td></tr>`;}).join('')}</tbody></table></div>`:'<div class="empty-state">A payout holds merchant proceeds until its settlement is recorded.</div>';
+  $('#payouts').innerHTML=d.payouts.length?`<div class="table-wrap"><table><thead><tr><th>Payout / recipient</th><th>Amount</th><th>State</th><th>Action</th></tr></thead><tbody>${d.payouts.map(p=>{const asset=d.assets.find(x=>x.id===p.asset),unknown=['unknown','submitting'].includes(p.intent_state);const label=p.state==='paid'?'Simulated payout recorded':p.state==='failed'?'Payout rejected · Hold returned':unknown?'Outcome unknown · Funds held':'Awaiting simulated settlement';return `<tr><td class="hash">${esc(p.id.slice(0,16))}…<small class="cell-note">${esc(p.recipient)}</small></td><td class="amount">${money(p.amount,asset)}</td><td><span class="pill">${label}</span></td><td>${p.state==='pending'?(unknown?`<button class="quiet" data-jump="connections">Review original payment ↗</button>`:`<button class="quiet" data-merchant-payout="${esc(p.id)}">Record test settlement ↗</button>`):p.state==='paid'?'Test settlement recorded':'Hold returned'}</td></tr>`;}).join('')}</tbody></table></div>`:'<div class="empty-state">A payout holds merchant proceeds until its settlement is recorded.</div>';
   if(!$('[data-pane=issuer]').contains(document.activeElement)) { $('#issuer-name').value=issuer.name; $('#issuer-symbol').value=issuer.symbol; $('#issuer-currency').value=issuer.currency; }
   $('#issuer-metrics').innerHTML=`<div class="reserve-caption">Recorded test reserves</div><div class="reserve-number">${number(issuer.reserve,token)} <span>${esc(issuer.currency)}</span></div><div class="reserve-small"><div><strong>${number(issuer.supply,token)}</strong><span>Outstanding ${esc(issuer.symbol)}</span></div><div><strong>${number(issuer.pending_redemptions,token)}</strong><span>Unpaid redemption claims</span></div></div><div class="reserve-caption">Issuance headroom · ${money(issuer.headroom,token)}</div><p class="reserve-validity ${issuer.reserve_current?'current':'expired'}">${issuer.reserve_current?'Test evidence expires '+timestamp(issuer.valid_until):'Current reserve evidence required before issuance'}</p>`;
   $('#redemptions').innerHTML=issuer.redemptions.length?`<div class="table-wrap"><table><thead><tr><th>Claim</th><th>Amount</th><th>State</th><th>Action</th></tr></thead><tbody>${issuer.redemptions.map(claim=>`<tr><td class="hash">${esc(claim.id.slice(0,17))}…</td><td>${money(claim.amount,token)}</td><td><span class="pill">${claim.state==='paid'?'Simulated payout recorded':'Claim awaiting simulated payout'}</span></td><td>${claim.state==='pending'?`<button class="quiet" data-payout="${esc(claim.id)}">Record test bank payout ↗</button>`:'Test claim paid'}</td></tr>`).join('')}</tbody></table></div>`:'<div class="empty-state">Redemption claims stay visible until a payout is recorded.</div>';
@@ -262,6 +267,7 @@ document.addEventListener('click', event => {
     }); return;
   }
   if(button.dataset.payout) perform(async()=>{await post('issuer/payout',{redemption:button.dataset.payout,payment_reference:uid('payout')});notice('Test redemption payout recorded. The unpaid claim and reserve position were updated.');});
+  if(button.dataset.intent){perform(async()=>{const action=button.dataset.intentAction;const result=await post('ops/'+button.dataset.intent+'/'+action);const recorded=result.intent||result;notice(recorded.state==='unknown'?'The test reply was interrupted. The original identity and hold are preserved; check the original payment.':recorded.state==='confirmed'?'Original test payment confirmed. One payout was recorded.':result.processed===false?'No new payment was submitted. Resolve any earlier unknown payment first.':'Original payment checked. Its existing hold is preserved.');});return;}
   if(button.dataset.merchantPayout) perform(async()=>{await post('payouts/'+button.dataset.merchantPayout+'/confirm',{payment_reference:uid('merchant-payout')});notice('Test payout settlement recorded. No real money moved.');});
 });
 $('#dismiss-feedback').onclick=()=>$('#action-feedback').hidden=true;
@@ -330,3 +336,18 @@ $('#result-dialog').addEventListener('close',restoreResultFocus);
 $('#download-diagnostics').onclick=()=>perform(async()=>{const data=await api(base()+'/diagnostics');download(JSON.stringify(data,null,2),'hellabit-redacted-diagnostics.json','application/json');notice('Downloaded runtime and internal-check diagnostics. No keys or customer inputs were included.');});
 $('#today').textContent=new Intl.DateTimeFormat('en-CA',{day:'2-digit',month:'short',year:'numeric',timeZone:'UTC'}).format(new Date()).toUpperCase()+' UTC';
 Promise.all([workspaces(),loadPlan()]).catch(error=>failure(error.message));
+
+function renderReadiness(){
+  const r=state.readiness;if(!r)return;
+  $('#readiness-build').textContent=({'locally-verified-current':'Verified for this source','packaged-source-matches-proof':'Matches packaged proof'})[r.source_build.status]||'Checks pending for this source';
+  $('#readiness-ledger').textContent=r.machine_observations.ledger_balanced&&r.machine_observations.control_audit_valid?'Balanced · Audit intact':'Needs review';
+  $('#readiness-unknown').textContent=String(r.machine_observations.unknown_or_overdue_submissions);
+  $('#readiness-next').textContent=r.next_action;
+  $('#readiness-controls').innerHTML=r.external_controls.map(c=>`<li><strong>${esc(c.title)}</strong><span class="pill">${c.status==='reported-unverified'?'Recorded · Review unverified':c.status==='expired'?'Review expired':'External evidence needed'}</span><p>${esc(c.next_action)}</p></li>`).join('');
+  const rows=(state.ops?.intents||[]).filter(i=>['prepared','submitting','unknown'].includes(i.state));
+  const total=Object.entries(state.ops?.counts||{}).filter(([k])=>['prepared','submitting','unknown'].includes(k)).reduce((n,[,v])=>n+v,0);
+  $('#queue-scope').textContent=`Showing ${rows.length} of ${total} active test payments. Up to 30 records, with unknown outcomes first.`;
+  $('#execution-queue').innerHTML=rows.length?rows.map(i=>{const asset=state.data.assets.find(a=>a.id===i.asset),pending=i.state==='unknown'||i.state==='submitting'&&i.lease_until<=r.observed_at,blocked=rows.some(x=>x.rail===i.rail&&x.id!==i.id&&['unknown','submitting'].includes(x.state));return `<article class="execution-item"><div><strong>${money(i.amount,asset)}</strong><span class="pill">${pending?'Outcome unknown · Hold preserved':i.state==='submitting'?'Submission in progress':'Prepared · Hold reserved'}</span></div><p class="hash">${esc(i.id)}</p>${pending?`<button class="secondary" data-intent="${esc(i.id)}" data-intent-action="reconcile">Check original payment ↗</button>`:i.state==='prepared'?`<div class="readiness-actions"><button class="secondary" data-intent="${esc(i.id)}" data-intent-action="process" data-policy-disabled="${blocked}" ${blocked?'disabled':''}>Run test settlement ↗</button><button class="quiet" data-intent="${esc(i.id)}" data-intent-action="interrupt" data-policy-disabled="${blocked}" ${blocked?'disabled':''}>Test an interrupted reply</button></div>${blocked?'<p class="fine-print">Waiting for the earlier payment check on this connection.</p>':''}`:'<p class="fine-print">The hold stays reserved while the worker owns this attempt.</p>'}</article>`;}).join(''):'<div class="empty-state">No active test payouts. Create one from Paid work to try recovery.</div>';
+}
+$('#responsibility-packet').onclick=()=>perform(async()=>{const packet=await api(base()+'/readiness/packet');download(JSON.stringify(packet,null,2),'hellabit-responsibilities.json','application/json');notice('Responsibility packet exported. It contains no personal or account details and grants no operating approval.');});
+$('#recovery-drill').onclick=()=>perform(async()=>{const result=await post('readiness/recovery-drill');notice('Encrypted snapshot restored and '+result.journal_count+' journal records checked. This proves recovery mechanics; production key custody and retention still require enrollment.');});

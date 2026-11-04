@@ -1,6 +1,6 @@
 {
   "name": "hellabit-gateway",
-  "version": "0.3.0",
+  "version": "0.4.0",
   "private": true,
   "description": "Processor-independent settlement, paid work and white-label issuer infrastructure",
   "license": "Apache-2.0",

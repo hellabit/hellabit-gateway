@@ -51,6 +51,7 @@ jobs:
           node-version: '24.22.1'
           cache: npm
       - run: npm ci --ignore-scripts --no-audit --no-fund
+      - run: python3 scripts/bootstrap_api.py
       - run: npx playwright install --with-deps chromium
       - run: python3 scripts/verify.py
       - name: Report verification failure

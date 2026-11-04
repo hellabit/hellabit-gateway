@@ -1,128 +1,127 @@
 # Hellabit Gateway
 
-**Recoverable purchases and durable results for API teams.**
+**When a payment reply disappears, recover the original payment.**
 
-Reserve a budget before work begins. Record its charge with delivery. Reconcile
-uncertainty without creating a second payment. Keep each currency, issuer and
-merchant's books separate.
+A merchant-controlled payment operations engine for API teams: durable payout
+intent, held budgets, original-identity recovery, inspectable results and exact
+usage accounting. Free Apache-2.0 core. No Stripe dependency or compulsory fee.
 
-Version 0.3 is an operational **local sandbox foundation** with a merchant
-console, paid reference API, SDK, ledger, three enrollment profiles, settlement
-verification interfaces and executable white-label token contracts. It has no
-Stripe integration. No bank, public blockchain or real customer is connected.
+Version **0.4.0 is a developer pre-release**. The console moves synthetic value;
+real-money submission remains blocked. Canada and the United States are intended
+markets. No bank, public-chain signer, legal issuer or customer is enrolled.
 
-## Try the console
-
-Use Python 3.11 or newer with a SQLite library containing the WAL-reset fix
-(3.51.3+, or the supported 3.44.6/3.50.7 backport branches). The service has
-zero third-party Python dependencies. The launcher checks the loaded SQLite library.
+## Try it in one command
 
 ```sh
 python3 scripts/run.py --demo
 ```
 
-Open the loopback URL printed by the command. The clean launcher removes
-inherited account, token, SSH-agent, proxy and Python-injection environment
-settings. State is private to `.private/`; quit and reopen the same command to
-resume it. The service deliberately binds only to `127.0.0.1`.
+Use Python 3.11+ with patched SQLite: 3.51.3+, or the supported 3.44.6/3.50.7
+backport branches. The launcher checks the library actually loaded. Open its
+printed loopback URL. Quit and reopen the command to resume your private state.
+The core console uses only Python's standard library; it stays on `127.0.0.1`.
 
-1. In **Paid work**, add test credits and reserve the invoice total check.
-2. Run the check, inspect the computed result and receipt, and return credits if needed.
-3. Mark another operation uncertain; its budget stays held until reconciliation.
-4. Settle merchant proceeds through a recorded test payout.
-5. In **Issuer lab**, choose a brand, record reserve evidence, issue tokens
-   and follow a redemption through its unpaid claim and test payout.
-6. In **Settlement planning**, prepare separate institution, native-USDC and issuer
-   references. Preparation never activates a connection.
+1. **Paid work:** add test credits, reserve an invoice total check and inspect its
+   computed result. Its charge and durable delivery commit together.
+2. Request a test payout. In **Settlement planning**, choose **Test an interrupted
+   reply**. The synthetic provider accepts it, but the reply disappears.
+3. Choose **Check original payment**. Recovery finds that accepted payment and
+   records one settlement. The hold stays reserved while its outcome is unknown.
+4. **Settlement planning** also exports a responsibility packet. Saved documents
+   never establish legal approval or activate a financial connection.
+5. **Issuer lab** keeps branded test issuance, reserve assertions and redemption
+   claims separate. Test balances and tokens have no monetary value.
 
-All console balances and settlement evidence are synthetic and have no monetary
-value. References are opaque identifiers; do not enter credentials or bank
-account numbers. This is not a public production server.
+Encrypted recovery rehearsal and the optional ASGI API need a one-time free,
+hash-locked dependency setup:
 
-## What is implemented
+```sh
+python3 scripts/bootstrap_api.py
+python3 scripts/run.py --demo
+```
 
-- Transactional reservations with stable operation identities and integer units.
-- Balanced, append-only postings and an internally verifiable hash chain.
-- Explicit uncertain states, frozen reservations and reconciliation outcomes.
-- Real invoice arithmetic with immutable quoted input hashes and atomic result/charge storage.
-- Original-identity recovery after a lost reservation response; compensating refunds revoke future retrieval.
-- Filtered activity before bounded row limits, with unknown outcomes first.
-- Separate merchant and platform proceeds; payout intents prevent overspending.
-- Authenticated bank harness and a backend USDC receipt verifier checking chain,
-  exact token, payer, recipient, value, canonical block and confirmation depth.
-- Separate issuer books: reserve proofs, supply limits, expiry, burns, pending
-  redemption claims and verified test payout records.
-- A JavaScript SDK with TypeScript declarations and no automatic mutation retry.
-- Customer-bound agent capabilities that cannot reprice work or authorize settlement.
-- Solidity contracts based on pinned OpenZeppelin components: buyer-signed
-  settlement with disclosed fees, role-controlled white-label issuance, reserve
-  caps, delayed administrator handover, freezes, pauses and redemption claims.
+[Review the exact build with Google](docs/REVIEW.md) using a nine-file bundle; no
+GitHub repost or public history rewrite is needed for each review.
 
-The contract and the offchain issuer books are independently tested components.
-An enrolled production indexer binding their state has not been implemented.
-The USDC verifier is tested against controlled RPC responses, not Circle or a
-public chain. The EVM proof uses an explicitly named private test dollar.
+No subscription, account registration or paid provider is required for these
+local examples. Setup downloads open-source packages. Never expose the owner
+console through a public tunnel. Do not enter bank numbers or secrets in draft
+connection forms; use opaque references.
+
+## What 0.4 adds
+
+| Capability | Proven software behavior | External enrollment still required |
+| --- | --- | --- |
+| Durable payout outbox | Intent and hold are atomic; leases fence workers; process-death recovery looks up the original identity | A named institution's submission/status contract and agreement |
+| Authenticated event inbox | Signed, timestamp-bound events; replay and conflict checks; no late downgrade | Provider-specific signature and event binding |
+| Chain projection and RPC | Bounded HTTPS reads, public-IP pinning, durable cursor, reorg retention, finalized-history stops | Exact endpoint/network/token and independent production readback |
+| Optional ASGI API | Pinned RSA access-token signatures, local subject grants, operator MFA and recent-authentication assertions, revocation and rate limits | Your identity realm, keys, TLS certificate and deployment policy |
+| Encrypted recovery | AES-GCM snapshots, authenticated new-path restore, ledger check and recovery rehearsal | Production key custody, offsite retention and incident ownership |
+| Exact usage metering | Integer micro-units aggregate into native cents; residuals carry forward; closed invoices are immutable | Customer agreement, actual costs and an approved collection method |
+| Operating readiness | Current source comparison, ledger/audit checks, opaque evidence records and responsibility packet | Actual entity, functions, jurisdictions and program review |
+
+These components do not constitute a bank, an audited financial service or an
+approved stablecoin program. The event indexer makes no financial postings. A
+canonical event from one RPC is not independent proof of issuer reserves.
+
+Existing capabilities include customer-bound agent permissions, quote/input
+binding, compensating refunds, delivery revocation, separate currency books, an
+SDK with TypeScript declarations and private-EVM tests of buyer-authorized
+settlement and white-label issuance contracts. CAD/USD ledger postings use cents;
+test USDC uses six decimals. No currency conversion is inferred.
+
+## Use it in your project
+
+- [Runnable purchase example](docs/QUICKSTART.md)
+- [Recovery, backup, metering, identity and indexing commands](docs/OPERATIONS.md)
+- [API routes and permissions](docs/API.md)
+- [Google review bundle and release checklist](docs/REVIEW.md)
+- [Architecture](docs/ARCHITECTURE.md), [rail contracts](docs/RAILS.md) and [security](SECURITY.md)
+- [Operating-role review](docs/OPERATING_ROLE.md), [activation](docs/ACTIVATION.md) and [issuer responsibilities](docs/ISSUERS.md)
+- [Commercial economics](docs/ECONOMICS.md), [connection decisions](docs/CONNECTIONS.md) and [product critique](docs/PRODUCT_REVIEW.md)
+
+The SDK accepts a sandbox key or a fresh access-token callback. It never
+silently retries a money mutation or changes a purchase key after a timeout.
 
 ## Verify and package
 
-Contract and browser development additionally require Node 24 and the locked
-development dependencies. One-time setup:
+Development uses Node 24, locked npm dependencies and headless Chromium. Install
+once, alongside the optional Python tools above:
 
 ```sh
 npm ci --ignore-scripts --no-audit --no-fund
 npx playwright install chromium
-```
-
-Then run the single verification command:
-
-```sh
 python3 scripts/verify.py
 ```
 
-It checks public dependency advisories, runs the Python/API/process-recovery suite, compiles and executes the contracts
-in a private EVM, checks the SDK, proves the browser journeys, packages the source
-and emits `evidence/terminal-result.json`. Only the npm advisory lookup contacts
-an external service; financial proofs use no public payment network. It does not
-install dependencies or perform external transactions. `--skip-browser` is an explicit verification
-limit, never equivalent to browser acceptance.
+One command checks public npm/OSV advisories, Python/API/process recovery,
+contracts in a private EVM, SDK and desktop/mobile journeys. It creates a
+reproducible source capsule, source manifest and Ed25519 signature, then writes
+`evidence/terminal-result.json`. Advisory lookups contact public services;
+financial proofs use synthetic data and no public payment network. Verification
+does not install packages, deploy, submit payments or publish a GitHub release.
 
-The source archive, its manifest and signature live in `release/`. Runtime data,
-keys, browser evidence, owner registration and dependencies are excluded. A
-portable checkpoint establishes content custody, not financial readiness.
+Source, signatures and compiled contract artifacts are packaged separately from
+runtime databases, private keys, owner identity and browser evidence. The public
+checkpoint key identifies source content; it is not a settlement authority.
+Hosted Linux verification is a separate GitHub Actions result. Its disposable
+Python environment builds checksum-pinned SQLite 3.54.1 from official source.
 
-The console's Developers page issues one-time merchant or customer-bound agent
-keys. They are masked by default, clear when leaving Developers, and never
-persist in browser storage. Owner-only revocation covers merchant, initial
-workspace and customer-bound agent keys. The SDK can look up an operation by
-its original purchase key after a timeout. The
-runtime is locally validated on macOS. Hosted Linux verification is reported by
-GitHub Actions. Its disposable Python environment builds checksum-pinned SQLite
-3.54.1 from official source and checks the loaded library before testing; runner
-images may otherwise provide a SQLite version without the required WAL fix.
+## Inbound business, with a useful free core
 
-## Connections and issuance
+Self-hosting stays free. Teams wanting the supported configuration operated for
+them can [request a managed-deployment discussion](mailto:a@epv.ai?subject=Hellabit%20managed%20deployment).
+Include the use case, intended jurisdiction, existing settlement provider and
+approximate volume. Do not send credentials, account numbers or customer data.
+Availability, responsibilities and price require an agreement; no paid service
+or automatic collection is activated by this repository.
 
-See the [runnable purchase example](docs/QUICKSTART.md), [permission matrix](docs/API.md),
-and [product critique and changes](docs/PRODUCT_REVIEW.md), [partner decisions](docs/CONNECTIONS.md),
-[architecture](docs/ARCHITECTURE.md), [rail contracts](docs/RAILS.md),
-[issuer responsibilities](docs/ISSUERS.md), [economics](docs/ECONOMICS.md),
-[activation requirements](docs/ACTIVATION.md) and [security](SECURITY.md).
+[Report a reproducible integration problem](https://github.com/hellabit/hellabit-gateway/issues/new/choose)
+or contribute a narrowly scoped improvement. Private security reports go to
+[a@epv.ai](mailto:a@epv.ai?subject=Hellabit%20security). Commercial demand, revenue
+and popularity are not established by tests or GitHub stars.
 
-Bank connectivity needs an institution-specific adapter and agreement. A live
-USDC route needs an exact network/token binding, verified RPC and enrolled
-signer. A redeemable white-label stablecoin needs an actual legal issuer,
-custodian, reserves, redemption arrangements and applicable approvals. Software
-does not establish backing, regulatory status or adoption by banks or governments.
-
-New Hellabit code is licensed under Apache-2.0. OpenZeppelin notices accompanying
-compiled contract artifacts are retained in `licenses/`. Development dependencies
-and their licenses are recorded in the generated dependency inventory.
-
-## Publication sequence
-
-Three nonbinding fit enquiries were submitted on 2026-11-04. There is no approved
-provider relationship or live connection. Publish the honestly labeled sandbox
-source after release checks; partner approval is not a prerequisite for publishing
-software. A public payment-service launch is a different milestone. Do not expose
-this loopback owner console through a public tunnel. No repository is published
-by the local verification command.
+New Hellabit code is Apache-2.0. OpenZeppelin redistribution notices remain in
+`licenses/`; exact dependency inventories and locks are included. The published
+[0.3.0 source release](https://github.com/hellabit/hellabit-gateway/releases/tag/v0.3.0)
+remains immutable. Local verification never publishes its successor.
