@@ -13,6 +13,39 @@ jobs:
       - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
         with:
           python-version: '3.14'
+      - name: Prepare patched SQLite in the disposable Python runtime
+        run: |
+          python3 - <<'PY'
+          import hashlib
+          import io
+          import os
+          import tarfile
+          import urllib.request
+          from pathlib import Path
+          url = 'https://www.sqlite.org/2026/sqlite-autoconf-3540100.tar.gz'
+          with urllib.request.urlopen(url, timeout=30) as response:
+              source = response.read(10000000)
+          expected = 'b6ced585c750916b1052667239a12c25a7ff34e7f06e1e6e01ecb0427657d9c4'
+          if hashlib.sha3_256(source).hexdigest() != expected:
+              raise SystemExit('SQLite source checksum mismatch')
+          destination = Path(os.environ['RUNNER_TEMP']) / 'hellabit-sqlite-source'
+          destination.mkdir(mode=0o700)
+          with tarfile.open(fileobj=io.BytesIO(source), mode='r:gz') as archive:
+              archive.extractall(destination, filter='data')
+          PY
+          hellabit_python_prefix="$(python3 -c 'import sys; print(sys.prefix)')"
+          cd "$RUNNER_TEMP/hellabit-sqlite-source/sqlite-autoconf-3540100"
+          ./configure --prefix="$hellabit_python_prefix"
+          make -j2
+          sudo make install
+          sudo ldconfig "$hellabit_python_prefix/lib"
+          cd "$GITHUB_WORKSPACE"
+          python3 - <<'PY'
+          import sqlite3
+          from hellabit.ledger import require_safe_sqlite
+          print('Loaded SQLite:', sqlite3.sqlite_version)
+          require_safe_sqlite()
+          PY
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: '24.22.1'

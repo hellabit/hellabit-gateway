@@ -95,8 +95,10 @@ keys. They are masked by default, clear when leaving Developers, and never
 persist in browser storage. Owner-only revocation covers merchant, initial
 workspace and customer-bound agent keys. The SDK can look up an operation by
 its original purchase key after a timeout. The
-runtime is currently validated on macOS; the included Linux CI workflow has not
-been run by a hosted GitHub runner in this local build.
+runtime is locally validated on macOS. Hosted Linux verification is reported by
+GitHub Actions. Its disposable Python environment builds checksum-pinned SQLite
+3.54.1 from official source and checks the loaded library before testing; runner
+images may otherwise provide a SQLite version without the required WAL fix.
 
 ## Connections and issuance
 

@@ -1,9 +1,9 @@
 {
   "files": [
     {
-      "bytes": 1525,
+      "bytes": 3041,
       "path": ".github/workflows/verify.yml",
-      "sha256": "1beffac5558719debba27149783b68d5be6df60384dec033679b0f33559c8548"
+      "sha256": "355773cfa7719f00886234fb4344849dd711b9cbf617b013569c4acea7736d86"
     },
     {
       "bytes": 92,
@@ -31,9 +31,9 @@
       "sha256": "e670cb40fc9b52635defe19e7daf7305102db932eba8018e17e42f2f9daa36aa"
     },
     {
-      "bytes": 6685,
+      "bytes": 6866,
       "path": "README.md",
-      "sha256": "8b82f738e644b5c56c3cb0b7421d1405ea9cb24571094da791cc02edeaa400bb"
+      "sha256": "118f818b3236fd94da780e3ba409ea4bea47dd37c96f234975139afef600ab99"
     },
     {
       "bytes": 3482,
@@ -43,7 +43,7 @@
     {
       "bytes": 296,
       "path": "VERIFIED.json",
-      "sha256": "ed2372b51db19fb7c48a8dbf5f7c67a9260d7aac66c5752bf5d512507ccc82d7"
+      "sha256": "04e24d4dbf222ab8bb2fa9248be79da99e95596d4dc97a6e7280f23c5a5bb0e6"
     },
     {
       "bytes": 46157,
