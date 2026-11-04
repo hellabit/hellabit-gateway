@@ -1,0 +1,11 @@
+{
+  "browserChecks": 88,
+  "contractChecks": 43,
+  "externalTransactions": 0,
+  "privateEvm": true,
+  "productionReady": false,
+  "pythonTests": 62,
+  "schema": "hellabit.build-proof.v1",
+  "sdkTests": 4,
+  "sourceTreeSha256": "880f6051235d20c73d5db23fdab85be72caa1ba700c827b9f397623bdc35afd5"
+}

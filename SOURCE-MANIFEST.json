@@ -1,0 +1,260 @@
+{
+  "files": [
+    {
+      "bytes": 725,
+      "path": ".github/workflows/verify.yml",
+      "sha256": "327387749c63a146292a8361f09d1dcfa90611c6a0ba518286064e3c5aa6c740"
+    },
+    {
+      "bytes": 92,
+      "path": ".gitignore",
+      "sha256": "f846882bed8e8d4bc06c37547181d450853e534a34f4e203d5185366160228d4"
+    },
+    {
+      "bytes": 1300,
+      "path": "AGENTS.md",
+      "sha256": "6510181cd39b990bfe3dba5ba703777b45226c494f45b57cc6ed0d20bc81a4fa"
+    },
+    {
+      "bytes": 11888,
+      "path": "DEPENDENCIES.json",
+      "sha256": "2b4e711f7716a6444da59958d73ab83f1652d3a6ae2cb817deb2571cabf9c929"
+    },
+    {
+      "bytes": 11358,
+      "path": "LICENSE",
+      "sha256": "cfc7749b96f63bd31c3c42b5c471bf756814053e847c10f3eb003417bc523d30"
+    },
+    {
+      "bytes": 792,
+      "path": "NOTICE",
+      "sha256": "e670cb40fc9b52635defe19e7daf7305102db932eba8018e17e42f2f9daa36aa"
+    },
+    {
+      "bytes": 6685,
+      "path": "README.md",
+      "sha256": "8b82f738e644b5c56c3cb0b7421d1405ea9cb24571094da791cc02edeaa400bb"
+    },
+    {
+      "bytes": 3482,
+      "path": "SECURITY.md",
+      "sha256": "e61c13dee0ab7b9bf8e7fdb051d43aa9adfa3888f8be36ce455aadf15f512a7f"
+    },
+    {
+      "bytes": 296,
+      "path": "VERIFIED.json",
+      "sha256": "8c452cc5cc32c425297951f92382dfc1646a23aa522d4c336f29d878ad85e12e"
+    },
+    {
+      "bytes": 46157,
+      "path": "compiled/AttestedStablecoin.json",
+      "sha256": "13a1958a792e455b88d64fc31646383db1750b76caa8b26c191ebff116eabf55"
+    },
+    {
+      "bytes": 16367,
+      "path": "compiled/PaymentRouter.json",
+      "sha256": "ec8d08bcb9d25f7f5b37266c8f060426466fcf1d14cf7067c4c31de7c3b56626"
+    },
+    {
+      "bytes": 5053,
+      "path": "contracts/AttestedStablecoin.sol",
+      "sha256": "36302816da51ad30dc434ffa1d8ca8c18ea6993fe1c10a628b8490549fa801d9"
+    },
+    {
+      "bytes": 2709,
+      "path": "contracts/PaymentRouter.sol",
+      "sha256": "ce636e10bb1bfb82c3f041a95b49ac03ee4964df479c2c55c0b60d96897c79e3"
+    },
+    {
+      "bytes": 422,
+      "path": "contracts/TestDollar.sol",
+      "sha256": "680ad18dd8180cfb42b06aea2e9546e0914ee5b6e74c135de8b0af1fdb7ef2e6"
+    },
+    {
+      "bytes": 1462,
+      "path": "docs/ACTIVATION.md",
+      "sha256": "3b46157a07f38e833f06e7ef264fbf83e61ce29658f4c2d6a6cace5fac1a6a99"
+    },
+    {
+      "bytes": 3590,
+      "path": "docs/API.md",
+      "sha256": "b70341fd52078777e6d5fbb8fb4ba95b5548414597ec84d3f0b2336b08be7a87"
+    },
+    {
+      "bytes": 2633,
+      "path": "docs/ARCHITECTURE.md",
+      "sha256": "882f9e352ff63a8808aded5795e61d219e2db96e3df6e59950d9e9001cc85b9e"
+    },
+    {
+      "bytes": 5801,
+      "path": "docs/CONNECTIONS.json",
+      "sha256": "893694f3c79416691c24218af1378c00075cb501b3be0c759cafcbff0ec78c03"
+    },
+    {
+      "bytes": 5472,
+      "path": "docs/CONNECTIONS.md",
+      "sha256": "718cb31503e1a7e9949ff9877ccf01faedbb88dc2e409eb62b88ea94bd706d12"
+    },
+    {
+      "bytes": 3235,
+      "path": "docs/ECONOMICS.md",
+      "sha256": "85738a91023a115a1a91b1190fd401531b8705f7a0913832bec981d31e992780"
+    },
+    {
+      "bytes": 2032,
+      "path": "docs/ISSUERS.md",
+      "sha256": "53abb8adb62914c785f8fb1445500f78293ca8dfaffce04b07b6378012f29fc1"
+    },
+    {
+      "bytes": 12174,
+      "path": "docs/PRODUCT_REVIEW.md",
+      "sha256": "573345400c7d6a07ab54a958764dd30da180a6bbd488af33fa61c5392914ce46"
+    },
+    {
+      "bytes": 3495,
+      "path": "docs/QUICKSTART.md",
+      "sha256": "3986c355c130654d16999a42a77fc0bd96013b2d1c2db2f0eb79edd2d5e15444"
+    },
+    {
+      "bytes": 2366,
+      "path": "docs/RAILS.md",
+      "sha256": "36fb57267ef0b6f3927322c583df0faf79306f7ecefa7e7645ed84f0dd5745cc"
+    },
+    {
+      "bytes": 1436,
+      "path": "examples/invoice-check.mjs",
+      "sha256": "545be733c252b81d28bee5a11780856eddb6205760950bc2045b05f753ccdb7b"
+    },
+    {
+      "bytes": 107,
+      "path": "hellabit/__init__.py",
+      "sha256": "d8066f75a03d50bf7235e42c746a91c747c8049a315a3bd6407a719b01500a62"
+    },
+    {
+      "bytes": 8248,
+      "path": "hellabit/issuer.py",
+      "sha256": "2e865661ba1b5837a492a2686ec513fb2e7d8de604fbac31bf224d0b32dd0363"
+    },
+    {
+      "bytes": 34898,
+      "path": "hellabit/ledger.py",
+      "sha256": "2ad746c2a0cc0d0da201fe003c8678d6b17f8d1877a5bd30a3de56aa9b51bf16"
+    },
+    {
+      "bytes": 3303,
+      "path": "hellabit/payouts.py",
+      "sha256": "f3fe945547c22096fb6ad05a5121786a022a3e267f3ed333c2da807bdd972c18"
+    },
+    {
+      "bytes": 6893,
+      "path": "hellabit/rails.py",
+      "sha256": "7cde19c1804d7863a45bf825b6db3fdd6a6d134310802faef4ef3c568a14f9e4"
+    },
+    {
+      "bytes": 17160,
+      "path": "hellabit/server.py",
+      "sha256": "ccbf0598a0ea9e1a76943186b4395379c424c1fe3851b8f209741492950a88a2"
+    },
+    {
+      "bytes": 3002,
+      "path": "hellabit/services.py",
+      "sha256": "e6e94a141aeb2c207395750d23abaae91839d6c8bcdffbe34ed6f66fddd92e02"
+    },
+    {
+      "bytes": 1090,
+      "path": "licenses/OpenZeppelin-MIT.txt",
+      "sha256": "20aebc68b11c063133aa2af0ef4bb29875477c6d16d715718f0daec563938b84"
+    },
+    {
+      "bytes": 18581,
+      "path": "package-lock.json",
+      "sha256": "1afa9b4ab60f1f30e84981c16b83479c23c40a2694b7376420d71b4ce361807b"
+    },
+    {
+      "bytes": 732,
+      "path": "package.json",
+      "sha256": "a9813ae3ab1097e307b21528bdd20234b44fafc02ade2d526224afb23d942054"
+    },
+    {
+      "bytes": 1722,
+      "path": "scripts/benchmark.py",
+      "sha256": "f4e1863bc94892137387556119f1bbbd1b801b376164dae8b4f9d96da768cc49"
+    },
+    {
+      "bytes": 22564,
+      "path": "scripts/browser-proof.mjs",
+      "sha256": "7e316d80d984a6a57eabec056723f14d81f7be45d02e48b19321949af091e396"
+    },
+    {
+      "bytes": 792,
+      "path": "scripts/run.py",
+      "sha256": "f1d0f2cb80754b9b95227fa234c6a5fe840701c4ab8a27eb6fa0bf21baa3b48a"
+    },
+    {
+      "bytes": 17385,
+      "path": "scripts/verify.py",
+      "sha256": "94d5796b0aed3aa3400ff63626646dc84692c8d99c1925280595cc956418711f"
+    },
+    {
+      "bytes": 1131,
+      "path": "sdk/hellabit.d.ts",
+      "sha256": "d1126cd7e7f99562a6ec2bccc90632da5e47bb05f91aea213a616210288e47a4"
+    },
+    {
+      "bytes": 2278,
+      "path": "sdk/hellabit.mjs",
+      "sha256": "f6d01d348ca9a1e439eddc33388a3220678e4616eca1cb21162b095b7a3ab9d1"
+    },
+    {
+      "bytes": 10672,
+      "path": "tests/contracts.mjs",
+      "sha256": "1a2e01ab209cca9742b877cf1edb38f2175e97f1191234c5c72e68e76d604dcf"
+    },
+    {
+      "bytes": 1916,
+      "path": "tests/sdk.test.mjs",
+      "sha256": "756cbca868f403472273b0694011225c1d30e6ac03877a73957389082f8e14da"
+    },
+    {
+      "bytes": 20934,
+      "path": "tests/test_core.py",
+      "sha256": "9e085d586a553d804cd41ba455809905dd02cbbd8037e155fd7d80736722472d"
+    },
+    {
+      "bytes": 12872,
+      "path": "tests/test_http.py",
+      "sha256": "e0de49dc9a76532ddac67b75c021454fbbe51416735fa200f3b4c732ae34bb6d"
+    },
+    {
+      "bytes": 2459,
+      "path": "tests/test_process.py",
+      "sha256": "645c86e6991e82f32d0f607af68eea7cd0962402577f04ab2dffd5046020091c"
+    },
+    {
+      "bytes": 7141,
+      "path": "tests/test_purchases.py",
+      "sha256": "f8c21ce666d5003db1206198870abca95e1cff26d48614c8843190e3989c1dc6"
+    },
+    {
+      "bytes": 25147,
+      "path": "web/app.css",
+      "sha256": "fb29aeb8835107ab666406d2389170036f6cb8da52ef2113c37c8439d2f7d1b3"
+    },
+    {
+      "bytes": 43312,
+      "path": "web/app.js",
+      "sha256": "be2b16aa11e66482126da24b56d7300f566c734feee3fcacdbd8538fe7b50279"
+    },
+    {
+      "bytes": 177,
+      "path": "web/favicon.svg",
+      "sha256": "eccdbc86ca638ee725b81be89afd71ba6bef610efd8d7dc367a4226176fbf145"
+    },
+    {
+      "bytes": 19911,
+      "path": "web/index.html",
+      "sha256": "ea5bd52715db9bddd37f81335fd8cc86cf6a0661d46370f561f3ce6bbeaa0636"
+    }
+  ],
+  "schema": "hellabit.source-manifest.v1"
+}

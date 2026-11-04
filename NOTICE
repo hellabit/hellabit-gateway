@@ -1,0 +1,15 @@
+Hellabit Gateway
+Copyright 2026 Hellabit Gateway contributors.
+
+New project source is licensed under Apache License 2.0.
+
+Compiled contract artifacts contain OpenZeppelin Contracts components, MIT
+licensed. The upstream copyright and license are retained in
+licenses/OpenZeppelin-MIT.txt. OpenZeppelin is an independent upstream project;
+no endorsement or security review of Hellabit is implied.
+
+Development tools are obtained separately through package-lock.json. They are
+not bundled as application runtimes. The generated dependency inventory records
+their versions, upstream integrity bindings and license identifiers. In
+particular EthereumJS VM/util components use MPL-2.0; no upstream source has been
+modified by this project. Preserve applicable notices in any later redistribution.

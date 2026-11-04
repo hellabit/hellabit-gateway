@@ -1,0 +1,10 @@
+.private/
+.cache/
+node_modules/
+__pycache__/
+*.pyc
+evidence/
+release/
+artifacts/
+.DS_Store
+
