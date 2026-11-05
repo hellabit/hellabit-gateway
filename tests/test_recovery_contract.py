@@ -50,6 +50,10 @@ class RecoveryContractTests(unittest.TestCase):
         self.assertEqual(self.book.reconcile(self.tenant)['journal_count'],before)
         with self.assertRaisesRegex(Error,'previous_writer_retired'):self.payout('retired-writer')
         with self.assertRaisesRegex(Error,'provider_writer_fenced'):self.provider.submit(job)
+        from hellabit.readiness import Readiness
+        retired=Readiness(self.book).report(self.tenant)
+        self.assertTrue(retired['machine_observations']['recovery_quarantine'])
+        self.assertTrue(retired['machine_observations']['previous_writer_retired'])
         with Ledger(restored_path).db() as db:self.assertTrue(db.execute("SELECT 1 FROM settings WHERE key='recovery_quarantine'").fetchone())
 
     def test_actual_handover_cli_retains_missing_commands_reconciles_returns_and_retires_access(self):

@@ -250,10 +250,17 @@ function updateControls() {
   disable('redeem',!wholeMinor||redeem>redemptionAvailable);
   disable('export-journal',!state.data.journal.some(event=>event.asset===a.id));
   const quarantined=!!state.readiness?.machine_observations.recovery_quarantine;
+  const retired=!!state.readiness?.machine_observations.previous_writer_retired;
   $('#recovery-lock').hidden=!quarantined;
+  $('#recovery-lock strong').textContent=retired?'Previous primary retired · History only':'Restored snapshot · Financial writes blocked';
+  $('#recovery-lock p').textContent=retired?'This history is preserved. Continue on the new handover path with freshly enrolled access. This primary cannot create payments or credentials.':'Inspect these records while commands and provider movements are reconciled. Restoring a database does not transfer payment authority.';
   if(quarantined){
     for(const id of ['fund','reserve','request-payout','attest','attest-balance','mint','redeem','save-issuer'])disable(id,true,'Financial writes are blocked on a restored snapshot.');
     $$('[data-intent],[data-payout],[data-merchant-payout],[data-op][data-action]').forEach(e=>{if(!['view','download','check'].includes(e.dataset.action))e.disabled=true;});
+  }
+  if(retired){
+    for(const id of ['merchant-key','agent-key','new-workspace','recovery-drill'])disable(id,true,'This primary is retired. Continue on the new handover path.');
+    $$('form[data-enroll] button[type="submit"],[data-revoke-key]').forEach(e=>e.disabled=true);
   }
 }
 function economics() {

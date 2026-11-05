@@ -133,7 +133,8 @@ class Readiness:
         from .backup import capacity
         backup_capacity=capacity(self.book)
         with self.book.db() as db:
-            quarantine=bool(db.execute("SELECT 1 FROM settings WHERE key='recovery_quarantine'").fetchone())
+            retired=bool(db.execute("SELECT 1 FROM settings WHERE key='recovery_retired'").fetchone())
+            quarantine=retired or bool(db.execute("SELECT 1 FROM settings WHERE key='recovery_quarantine'").fetchone())
             unresolved=[dict(r) for r in db.execute("""SELECT id,connection,asset,amount,created FROM execution_intents
                 WHERE tenant=? AND (state='unknown' OR state='submitting' AND lease_until<=?) ORDER BY created LIMIT 30""",(tenant,self.book.clock()))]
         for row in unresolved:row['age_seconds']=max(0,self.book.clock()-row['created'])
@@ -142,13 +143,14 @@ class Readiness:
                 "source_build":local_build(),
                 "machine_observations":{"ledger_balanced":check["ok"],"journal_count":check["journal_count"],
                     "control_audit_valid":audit_check["ok"],"control_audit_entries":audit_check["entries_checked"],
-                    "backup_capacity":backup_capacity,"recovery_quarantine":quarantine,"unresolved_holds":unresolved,
+                    "backup_capacity":backup_capacity,"recovery_quarantine":quarantine,"previous_writer_retired":retired,"unresolved_holds":unresolved,
                     "unknown_or_overdue_submissions":unknown,"payout_counts":ops["counts"],
                     "enrolled_api_principals":principals,"chain_bindings":chains},
                 "external_controls":controls,"legal_role_resolved":False,"live_payments_enabled":False,
                 "activation_blocked":True,
                 "personal_or_account_details_included":False,
-                "next_action":"Keep this restored copy isolated. Reconcile missing commands and provider movements and fence the prior writer before promotion." if quarantine else
+                "next_action":"This primary is retired. Inspect its preserved history and operate only the new handover path with fresh access." if retired else
+                    "Keep this restored copy isolated. Reconcile missing commands and provider movements and fence the prior writer before promotion." if quarantine else
                     "Reconcile the original unknown payment identity." if unknown else
                     "Resolve the exact operating role and provider program before enrolling a live connection."}
 
