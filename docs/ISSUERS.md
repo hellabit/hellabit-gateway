@@ -31,3 +31,12 @@ It must not be described as an already effective authorization for Hellabit.
 The current obligations and classification need qualified review for the exact
 operator and functions. Sources: [Canada Gazette](https://gazette.gc.ca/rp-pr/p1/2026/2026-10-24/html/reg1-eng.html),
 [FINTRAC registration scope](https://fintrac-canafe.canada.ca/msb-esm/questions/2-eng).
+
+
+The offchain lab separates new deposits from full reserve-balance evidence.
+A small deposit cannot refresh an older reserve pool. Refreshing evidence must
+name the complete current synthetic balance; it never proves real reserves.
+Customers, merchant proceeds and platform fees each have a redemption path.
+Burning any holder's balance keeps the unpaid claim in liabilities until the
+separate test payout is recorded. Branded issuance remains an experimental
+profile, separate from the payment-recovery workflow.

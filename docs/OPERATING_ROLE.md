@@ -7,10 +7,8 @@ initiating payments, holding customer balances, signing transactions and issuing
 redeemable value can create different obligations. Open-source licensing does
 not decide the classification of the business operating that software.
 
-Canada and the United States are separate intended markets. The private operator
-profile is not distributed with source. An account-reported business label is
-not independent corporate-registration evidence. No company, identity, address,
-provider account or legal status is inferred from a GitHub profile.
+Canada and the United States require separate assessments of the actual operator,
+activities, customers and settlement arrangements.
 
 The readiness report deliberately cannot mark legal requirements verified or
 enable live funds. A document hash proves content identity only when its bytes
@@ -31,7 +29,3 @@ funds flow/functions/customer jurisdictions, resolve applicable legal roles and
 registrations, obtain the named program's written acceptance, assign credential
 custody and incident ownership, review security, and authorize one bounded live
 canary. Do not accept real customer funds while these remain unresolved.
-
-The zero-spend release path is publishing useful software and receiving inbound
-integration enquiries. It does not include paid regulatory/program enrollment,
-new accounts, customer onboarding, public contract deployment or token issuance.

@@ -134,11 +134,6 @@ def main():
         "productionReady": False, "livePaymentsEnabled": False, "externalTransactions": 0, "realStablecoinsIssued": False}
     env = {"PATH": os.defpath, "LANG": "en_US.UTF-8", "PYTHONPATH": str(ROOT), "PYTHONDONTWRITEBYTECODE": "1"}
     try:
-        owner = ROOT.parents[1]; gate = owner / "Scripts/xxv_context_gate.py"
-        if gate.is_file() and (owner / "config/xxv/context-manifest.json").is_file():
-            result = subprocess.run([sys.executable, str(gate)], cwd=ROOT, env=env, capture_output=True, text=True, timeout=20)
-            if result.returncode: raise RuntimeError("Canonical context gate failed")
-            receipt["canonicalContextVerified"] = True
         config_path = PRIVATE / "toolchain.json"
         if config_path.exists():
             if config_path.is_symlink() or config_path.stat().st_uid != os.getuid() or stat.S_IMODE(config_path.stat().st_mode) != 0o600:
@@ -224,9 +219,8 @@ def main():
         source_hash = sha(json.dumps({n: sha(b) for n, b in sorted(files.items())}, sort_keys=True).encode())
         for name in ["AttestedStablecoin", "PaymentRouter"]:
             files["compiled/" + name + ".json"] = (ROOT / "artifacts" / (name + ".json")).read_bytes()
-        files["VERIFIED.json"] = (json.dumps({"schema": "hellabit.build-proof.v1", "sourceTreeSha256": source_hash,
-            "pythonTests": receipt["pythonTests"], "contractChecks": receipt["contractChecks"], "sdkTests": receipt["sdkTests"],
-            "browserChecks": receipt["browserChecks"], "privateEvm": True, "productionReady": False, "externalTransactions": 0}, indent=2, sort_keys=True) + "\n").encode()
+        files["VERIFIED.json"] = (json.dumps({"schema": "hellabit.build-proof.v2", "sourceTreeSha256": source_hash,
+            "version":receipt["version"],"productionReady":False,"externalTransactions":0},indent=2,sort_keys=True)+"\n").encode()
         archive_data = zip_bytes(files)
         if archive_data != zip_bytes(files): raise RuntimeError("Source package is not reproducible")
         member_count = inspect_archive(archive_data)

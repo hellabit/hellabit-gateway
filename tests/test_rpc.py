@@ -1,11 +1,49 @@
 import json
 import ssl
+import time
+import threading
+import socket
+import http.client
+import http.server
 import unittest
 from unittest.mock import patch
 from hellabit.ledger import Error
 from hellabit.rpc import ReadOnlyRpc, PinnedHTTPSConnection
 
 class RpcTests(unittest.TestCase):
+    def test_dns_has_the_same_total_deadline_as_the_request(self):
+        def slow(*args,**kwargs):
+            time.sleep(0.2);return [(2,1,6,"",("8.8.8.8",443))]
+        with patch("hellabit.rpc.socket.getaddrinfo",side_effect=slow):
+            start=time.monotonic()
+            with self.assertRaisesRegex(Error,"rpc_deadline_exceeded"):
+                self.client(timeout=0.05,retries=2)("eth_blockNumber",[])
+            self.assertLess(time.monotonic()-start,0.18)
+
+    def test_a_continuously_dripping_response_cannot_extend_the_deadline(self):
+        class Handler(http.server.BaseHTTPRequestHandler):
+            def log_message(self,*args):pass
+            def do_POST(self):
+                self.send_response(200);self.end_headers()
+                try:
+                    for _ in range(100):self.wfile.write(b" ");self.wfile.flush();time.sleep(0.02)
+                except OSError:pass
+        server=http.server.ThreadingHTTPServer(("127.0.0.1",0),Handler);server.daemon_threads=True
+        thread=threading.Thread(target=server.serve_forever,daemon=True);thread.start()
+        port=server.server_address[1]
+        class LocalConnection(http.client.HTTPConnection):
+            def __init__(self,host,address,timeout,context):super().__init__("127.0.0.1",port,timeout=timeout)
+            def connect(self):
+                self.sock=socket.socket();self.sock.settimeout(self.timeout);self.sock.connect(("127.0.0.1",port))
+        try:
+            with patch("hellabit.rpc.PinnedHTTPSConnection",LocalConnection):
+                # Local transport only; the production connection remains TLS/pinned.
+                start=time.monotonic()
+                with self.assertRaisesRegex(Error,"rpc_deadline_exceeded"):
+                    self.client(timeout=0.15,retries=2)("eth_blockNumber",[])
+                self.assertLess(time.monotonic()-start,0.6)
+        finally:server.shutdown();server.server_close();thread.join(timeout=1)
+
     def setUp(self):
         self.payload = None
         self.status, self.raw, self.response_id = 200, None, None

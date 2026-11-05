@@ -16,6 +16,7 @@ class SandboxProvider:
         self.path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
         with self.db() as db:
             db.execute("CREATE TABLE IF NOT EXISTS accepted(key TEXT PRIMARY KEY,request_hash TEXT NOT NULL,receipt TEXT NOT NULL)")
+            db.execute("CREATE TABLE IF NOT EXISTS corrections(key TEXT NOT NULL,event_id TEXT PRIMARY KEY,body TEXT NOT NULL)")
         os.chmod(self.path, 0o600)
 
     def db(self):
@@ -45,4 +46,38 @@ class SandboxProvider:
         return receipt
 
     def accepted_count(self):
-        with self.db() as db: return db.execute("SELECT COUNT(*) FROM accepted").fetchone()[0]
+        with self.db() as db:
+            return sum(json.loads(r[0])["status"]!="rejected" for r in db.execute("SELECT receipt FROM accepted"))
+
+    def close_without_effect(self, job):
+        # The same transaction competes with submit(). An existing acceptance
+        # wins; otherwise this tombstone permanently prevents a future send.
+        receipt={"mode":"sandbox","key":job["external_key"],"request_hash":job["request_hash"],
+                 "status":"rejected","reference":"closed-"+digest(job["external_key"])[:32],
+                 "amount":job["amount"],"asset":job["asset"],"recipient":job["recipient"]}
+        with self.db() as db:
+            db.execute("BEGIN IMMEDIATE")
+            old=db.execute("SELECT request_hash,receipt FROM accepted WHERE key=?",(job["external_key"],)).fetchone()
+            if old and old[0]!=job["request_hash"]:raise Error("provider_idempotency_conflict")
+            if old:receipt=json.loads(old[1])
+            else:db.execute("INSERT INTO accepted VALUES(?,?,?)",(job["external_key"],job["request_hash"],canonical(receipt)))
+            db.commit()
+        return receipt
+
+    def return_payment(self, key, event_id, amount, status="returned"):
+        from .ledger import identifier,units
+        identifier(event_id);units(amount)
+        receipt=self.lookup(key)
+        if not receipt or receipt["status"]!="settled" or status not in ("returned","reversed"):
+            raise Error("settled_payment_required")
+        event={**receipt,"status":status,"amount":amount,"event_id":event_id,
+               "original_reference":receipt["reference"],"reference":"return-"+digest([key,event_id])[:32]}
+        with self.db() as db:
+            old=db.execute("SELECT body FROM corrections WHERE event_id=?",(event_id,)).fetchone()
+            if old and old[0]!=canonical(event):raise Error("provider_adjustment_conflict")
+            db.execute("INSERT OR IGNORE INTO corrections VALUES(?,?,?)",(key,event_id,canonical(event)))
+        return event
+
+    def adjustments(self,key):
+        with self.db() as db:
+            return [json.loads(r[0]) for r in db.execute("SELECT body FROM corrections WHERE key=? ORDER BY rowid",(key,))]

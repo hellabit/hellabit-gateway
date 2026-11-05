@@ -8,6 +8,17 @@ from hellabit.metering import UsageMeter
 def stamp(month):return int(datetime(2026,month,15,tzinfo=timezone.utc).timestamp())
 
 class MeterTests(unittest.TestCase):
+    def test_running_totals_are_constant_work_and_invoice_close_checks_the_event_history(self):
+        statements=[];original=self.book.db
+        def traced():
+            db=original();db.set_trace_callback(statements.append);return db
+        self.book.db=traced
+        for n in range(100):self.meter.record(self.tenant,"managed","batch-"+str(n),10)
+        self.assertFalse(any("SUM(micro)" in sql for sql in statements))
+        self.assertEqual(self.meter.preview(self.tenant,"managed")["usage_micro"],1000000)
+        with self.book.db() as db:db.execute("UPDATE usage_totals SET micro=micro+1")
+        self.now=stamp(12)
+        with self.assertRaisesRegex(Error,"usage_total_mismatch"):self.meter.close(self.tenant,"managed","2026-11")
     def setUp(self):
         self.tmp=tempfile.TemporaryDirectory();self.now=stamp(11)
         self.book=Ledger(Path(self.tmp.name)/"ledger.sqlite3",clock=lambda:self.now)

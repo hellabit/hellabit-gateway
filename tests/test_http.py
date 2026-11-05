@@ -115,7 +115,7 @@ class HttpTests(unittest.TestCase):
         self.assertEqual(status,200)
         plan=json.loads(raw)
         self.assertFalse(plan['live_enabled'])
-        self.assertTrue(all(x['state']=='enquiry-submitted' and not x['account_connected'] for x in plan['partners']))
+        self.assertTrue(all(x['state']=='not-configured' and not x['account_connected'] for x in plan['partners']))
 
     def test_diagnostics_exclude_identity_keys_inputs_and_external_claims(self):
         status, _, raw=self.request('GET',self.base+'/diagnostics',headers=self.owner)

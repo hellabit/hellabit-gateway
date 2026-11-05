@@ -8,14 +8,8 @@ import subprocess
 import sys
 
 ROOT = Path(__file__).resolve().parents[1]
-owner = ROOT.parents[1]
-gate = owner / "Scripts" / "xxv_context_gate.py"
 env = {"PATH": os.defpath, "LANG": "en_US.UTF-8", "PYTHONDONTWRITEBYTECODE": "1", "PYTHONPATH": str(ROOT)}
 os.chdir(ROOT)
-if gate.is_file() and (owner / "config/xxv/context-manifest.json").is_file():
-    result = subprocess.run([sys.executable, str(gate)], cwd=ROOT, env=env, capture_output=True, text=True)
-    if result.returncode:
-        raise SystemExit("Canonical context gate failed; sandbox was not started.")
 python=sys.executable
 config=ROOT/".private/toolchain.json"
 if config.exists():

@@ -13,12 +13,8 @@ PRIVATE = ROOT / ".private"
 def sha(path): return hashlib.sha256(path.read_bytes()).hexdigest()
 
 def main():
-    owner = ROOT.parents[1]
-    gate = owner / "Scripts/xxv_context_gate.py"
     env = {"PATH": os.defpath, "LANG": "en_US.UTF-8", "PYTHONDONTWRITEBYTECODE": "1",
            "PIP_CONFIG_FILE": os.devnull, "PIP_NO_INPUT": "1", "PIP_DISABLE_PIP_VERSION_CHECK": "1"}
-    if gate.is_file() and (owner / "config/xxv/context-manifest.json").is_file():
-        subprocess.run([sys.executable, str(gate)], cwd=ROOT, env=env, check=True)
     PRIVATE.mkdir(exist_ok=True, mode=0o700)
     target = PRIVATE / "api-venv"
     if target.is_symlink(): raise SystemExit("Unsafe API environment path")

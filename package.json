@@ -1,8 +1,8 @@
 {
   "name": "hellabit-gateway",
-  "version": "0.4.0",
+  "version": "0.5.0",
   "private": true,
-  "description": "Processor-independent settlement, paid work and white-label issuer infrastructure",
+  "description": "Payment outcome recovery, financial evidence and merchant-controlled settlement",
   "license": "Apache-2.0",
   "type": "module",
   "engines": {

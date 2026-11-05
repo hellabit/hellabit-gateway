@@ -1,5 +1,4 @@
 from __future__ import annotations
-import secrets
 from .ledger import Error, digest, identifier, units
 from .rails import SandboxBank
 
@@ -16,6 +15,7 @@ class Payouts:
             raise Error("invalid_payout_source", 400)
         request_hash, key_hash = digest([asset, amount, recipient, source]), digest(key)
         with self.ledger.transaction() as db:
+            self.ledger.assert_payment_writes(db)
             self.ledger.tenant(db, tenant)
             if self.ledger.asset(db, tenant, asset)["rail"] not in ("bank", "usdc"):
                 raise Error("issuer_redemption_required")
@@ -26,7 +26,9 @@ class Payouts:
                 return {**dict(old), "intent":intent["id"] if intent else None,"replayed": True}
             if self.ledger._balance(db, tenant, asset, source) < amount:
                 raise Error("insufficient_payout_balance")
-            payout = "pay_" + secrets.token_hex(12)
+            # The caller's business identity, not a random restored database row,
+            # determines the provider identity. Terms are checked separately.
+            payout = "pay_" + digest(["payout-command-v2", tenant, key_hash])[:48]
             db.execute("INSERT INTO payouts(tenant,id,asset,amount,source,recipient,state,key_hash,request_hash,payment_reference) VALUES(?,?,?,?,?,?,?,?,?,?)", (tenant, payout, asset, amount, source, recipient, "pending", key_hash, request_hash, None))
             self.ledger._post(db, tenant, "payout-reserved", payout, asset, [(source, -amount), ("payout:" + payout, amount)])
             intent = self.operations.enqueue(db, tenant, payout, asset, amount, recipient)

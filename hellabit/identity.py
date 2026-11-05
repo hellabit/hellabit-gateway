@@ -16,6 +16,13 @@ CREATE TABLE IF NOT EXISTS api_principals(
  rate_limit INTEGER NOT NULL,UNIQUE(issuer,subject_hash));
 CREATE TABLE IF NOT EXISTS api_rate_windows(
  principal TEXT NOT NULL,window INTEGER NOT NULL,requests INTEGER NOT NULL,PRIMARY KEY(principal,window));
+CREATE TABLE IF NOT EXISTS api_grants(
+ principal TEXT NOT NULL,version INTEGER NOT NULL,action TEXT NOT NULL,body TEXT NOT NULL,
+ created INTEGER NOT NULL,PRIMARY KEY(principal,version));
+CREATE TRIGGER IF NOT EXISTS api_grant_no_update BEFORE UPDATE ON api_grants
+ BEGIN SELECT RAISE(ABORT,'append_only'); END;
+CREATE TRIGGER IF NOT EXISTS api_grant_no_delete BEFORE DELETE ON api_grants
+ BEGIN SELECT RAISE(ABORT,'append_only'); END;
 """
 
 class Identity:
@@ -39,6 +46,21 @@ class Identity:
             self.keys[kid]=key
         self.book,self.issuer,self.audience,self.jwt=book,issuer,audience,jwt
         ensure_schema(book,"identity",SCHEMA)
+        if not getattr(book,"_identity_grant_migrated",False):
+            with book.transaction() as db:
+                if "valid_after" not in {r[1] for r in db.execute("PRAGMA table_info(api_principals)")}:
+                    db.execute("ALTER TABLE api_principals ADD COLUMN valid_after INTEGER NOT NULL DEFAULT 0")
+                for row in db.execute("SELECT * FROM api_principals WHERE id NOT IN (SELECT principal FROM api_grants)").fetchall():
+                    self._history(db,row,"imported")
+            book._identity_grant_migrated=True
+
+    def _history(self,db,row,action):
+        from .ledger import canonical
+        version=db.execute("SELECT COALESCE(MAX(version),0)+1 FROM api_grants WHERE principal=?",(row["id"],)).fetchone()[0]
+        terms={k:row[k] for k in ("role","customer","expires","rate_limit","revoked","valid_after")}
+        db.execute("INSERT INTO api_grants VALUES(?,?,?,?,?)",(row["id"],version,action,canonical(terms),self.book.clock()))
+        audit(self.book,db,row["tenant"],"api-grant-"+action,row["id"],{"version":version,**terms})
+        return version
 
     def enroll(self, tenant, subject, role, expires, *, customer=None, rate_limit=120):
         if not isinstance(subject,str) or not 1 <= len(subject) <= 200 or any(ord(c)<32 for c in subject):
@@ -58,12 +80,42 @@ class Identity:
                 if any(old[k]!=v for k,v in {"tenant":tenant,"role":role,"customer":customer,
                         "expires":expires,"rate_limit":rate_limit}.items()) or old["revoked"]:
                     raise Error("principal_binding_immutable",409)
-                return {"id":old["id"],"replayed":True}
+                version=db.execute("SELECT MAX(version) FROM api_grants WHERE principal=?",(old["id"],)).fetchone()[0]
+                return {"id":old["id"],"version":version,"replayed":True}
             id_="principal_"+secrets.token_hex(12)
-            db.execute("INSERT INTO api_principals VALUES(?,?,?,?,?,?,?,0,?)",
+            db.execute("INSERT INTO api_principals(id,tenant,issuer,subject_hash,role,customer,expires,revoked,rate_limit) VALUES(?,?,?,?,?,?,?,0,?)",
                        (id_,tenant,self.issuer,hashed,role,customer,expires,rate_limit))
-            audit(self.book,db,tenant,"api-principal-enrolled",id_,{"role":role,"expires":expires})
-        return {"id":id_,"role":role,"expires":expires}
+            row=db.execute("SELECT * FROM api_principals WHERE id=?",(id_,)).fetchone()
+            version=self._history(db,row,"enrolled")
+        return {"id":id_,"version":version,"role":role,"expires":expires}
+
+    def change_grant(self,tenant,id_,action,expected_version,*,expires,role=None,customer=None,rate_limit=None):
+        identifier(id_)
+        if action not in ("renew","replace","reinstate") or type(expected_version) is not int:
+            raise Error("invalid_grant_change",400)
+        if type(expires) is not int or not self.book.clock()<expires<=self.book.clock()+31*86400:
+            raise Error("invalid_principal_expiry",400)
+        with self.book.transaction() as db:
+            old=db.execute("SELECT * FROM api_principals WHERE tenant=? AND id=? AND issuer=?",(tenant,id_,self.issuer)).fetchone()
+            if not old:raise Error("principal_not_found",404)
+            current=db.execute("SELECT MAX(version) FROM api_grants WHERE principal=?",(id_,)).fetchone()[0]
+            if current!=expected_version:raise Error("grant_version_conflict",409)
+            if bool(old["revoked"])!=(action=="reinstate"):raise Error("explicit_reinstatement_required" if old["revoked"] else "principal_not_revoked",409)
+            if action=="renew" and any(v is not None for v in (role,customer,rate_limit)):
+                raise Error("renewal_cannot_change_permissions",400)
+            role=old["role"] if role is None else role
+            customer=old["customer"] if action=="renew" else customer
+            rate_limit=old["rate_limit"] if rate_limit is None else rate_limit
+            if role not in ("merchant","agent","read-only","operator") or type(rate_limit) is not int or not 1<=rate_limit<=6000:
+                raise Error("invalid_grant_terms",400)
+            if role=="agent":self.book.customer(db,tenant,customer)
+            elif customer is not None:raise Error("unexpected_customer_binding",400)
+            valid_after=self.book.clock()+1
+            db.execute("UPDATE api_principals SET role=?,customer=?,rate_limit=?,expires=?,revoked=0,valid_after=? WHERE id=?",
+                       (role,customer,rate_limit,expires,valid_after,id_))
+            row=db.execute("SELECT * FROM api_principals WHERE id=?",(id_,)).fetchone()
+            version=self._history(db,row,action)
+        return {"id":id_,"version":version,"expires":expires,"tokens_issued_at_or_after":valid_after}
 
     def revoke(self, tenant, id_):
         identifier(id_)
@@ -71,8 +123,9 @@ class Identity:
             row=db.execute("SELECT * FROM api_principals WHERE tenant=? AND id=?",(tenant,id_)).fetchone()
             if not row:raise Error("principal_not_found",404)
             db.execute("UPDATE api_principals SET revoked=1 WHERE id=?",(id_,))
-            audit(self.book,db,tenant,"api-principal-revoked",id_,{})
-        return {"revoked":True}
+            changed=db.execute("SELECT * FROM api_principals WHERE id=?",(id_,)).fetchone()
+            version=self._history(db,changed,"revoked") if not row["revoked"] else db.execute("SELECT MAX(version) FROM api_grants WHERE principal=?",(id_,)).fetchone()[0]
+        return {"revoked":True,"version":version}
 
     def authenticate(self, token):
         if not isinstance(token,str) or not 1<=len(token)<=8192:raise Error("unauthorized",401)
@@ -105,6 +158,7 @@ class Identity:
                            (self.issuer,digest(claims["sub"]))).fetchone()
             if not row or row["revoked"] or row["expires"]<=self.book.clock():
                 raise Error("principal_not_enrolled",403)
+            if claims["iat"]<row["valid_after"]:raise Error("fresh_token_after_grant_change_required",403)
             amr=claims.get("amr",[])
             if row["role"]=="operator" and (not isinstance(amr,list) or "mfa" not in amr):
                 raise Error("operator_mfa_required",403)

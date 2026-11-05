@@ -3,9 +3,11 @@ from __future__ import annotations
 import argparse
 import asyncio
 import json
+import logging
 import os
 from pathlib import Path
 import re
+import secrets
 import stat
 from urllib.parse import urlsplit
 from . import __version__
@@ -52,7 +54,7 @@ class Api:
                 raise Error("unexpected_request_body",400)
             if path=="/api/health" and method=="GET":
                 result={"service":"hellabit-gateway","version":__version__,"mode":"deployment-foundation",
-                        "live_payments_enabled":False}
+                        "live_payments_enabled":False,"check":"liveness"}
             else:
                 auth=headers.get(b"authorization","")
                 if not auth.startswith("Bearer "):raise Error("unauthorized",401)
@@ -87,8 +89,12 @@ class Api:
             status,result=error.status,{"error":error.code}
         except asyncio.TimeoutError:
             status,result=408,{"error":"request_body_timeout"}
-        except Exception:
-            status,result=500,{"error":"internal_error"}
+        except Exception as error:
+            correlation=secrets.token_hex(12)
+            # Never include the exception message, URL, token, claims or body.
+            logging.getLogger("hellabit.api").error(canonical({"event":"request-failed",
+                "correlation_id":correlation,"exception_type":type(error).__name__}))
+            status,result=500,{"error":"internal_error","correlation_id":correlation}
         encoded=canonical(result).encode()
         headers=[(b"content-type",b"application/json; charset=utf-8"),(b"content-length",str(len(encoded)).encode()),
                  (b"cache-control",b"no-store"),(b"x-content-type-options",b"nosniff"),
@@ -104,6 +110,13 @@ class Api:
         if not (path==prefix or path.startswith(prefix+"/")):raise Error("workspace_forbidden",403)
         tail=path[len(prefix):].lstrip("/")
         book,tenant=self.book,principal["tenant"]
+        if method=="GET" and tail=="ready":
+            with book.db() as db:
+                if db.execute("SELECT value FROM settings WHERE key='schema_version'").fetchone() is None:
+                    raise Error("database_not_ready",503)
+                quarantined=bool(db.execute("SELECT 1 FROM settings WHERE key='recovery_quarantine'").fetchone())
+            if quarantined:raise Error("restored_database_quarantined",503)
+            return {"database_ready":True,"live_payments_enabled":False,"scope":"database-access-and-recovery-gate"}
         def fields(required,optional=()):
             if set(body)-set(required)-set(optional) or any(k not in body for k in required):
                 raise Error("invalid_fields",400)

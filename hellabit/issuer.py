@@ -6,11 +6,18 @@ attest real reserves or submit a blockchain mint. Contract proof is independent.
 import re
 from .ledger import Error, canonical, digest, identifier, units
 from .rails import SandboxBank
+from .control import audit,ensure_schema
 
 
 class Issuer:
     def __init__(self, ledger):
         self.ledger = ledger
+        ensure_schema(ledger,"issuer-audit","")
+        if not getattr(ledger,"_issuer_source_migrated",False):
+            with ledger.transaction() as db:
+                if "source" not in {r[1] for r in db.execute("PRAGMA table_info(redemptions)")}:
+                    db.execute("ALTER TABLE redemptions ADD COLUMN source TEXT NOT NULL DEFAULT 'customer'")
+            ledger._issuer_source_migrated=True
 
     def _state(self, db, tenant):
         row = db.execute("SELECT * FROM issuer WHERE tenant=?", (tenant,)).fetchone()
@@ -26,7 +33,7 @@ class Issuer:
         data['identity_locked'] = bool(db.execute('SELECT 1 FROM reserve_proofs WHERE tenant=? LIMIT 1', (tenant,)).fetchone())
         data["mode"] = "sandbox"
         data["real_reserves_verified"] = False
-        data["redemptions"] = [dict(x) for x in db.execute("SELECT id,customer,amount,state,payment_reference FROM redemptions WHERE tenant=? ORDER BY rowid DESC LIMIT 20", (tenant,))]
+        data["redemptions"] = [dict(x) for x in db.execute("SELECT id,customer,source,amount,state,payment_reference FROM redemptions WHERE tenant=? ORDER BY rowid DESC LIMIT 20", (tenant,))]
         return data
 
     def state(self, tenant):
@@ -63,9 +70,24 @@ class Issuer:
                 raise Error("reserve_limit")
             self.ledger.consume_rail_event(db, tenant, "bank", reference, "issuer-reserve", request)
             db.execute("INSERT INTO reserve_proofs VALUES(?,?,?,?)", (tenant, reference, request, token_units))
-            db.execute("UPDATE issuer SET reserve=reserve+?,valid_until=? WHERE tenant=?", (token_units, self.ledger.clock() + 86400, tenant))
+            # Evidence of a new deposit cannot refresh the historical pool.
+            expiry=min(state["valid_until"],self.ledger.clock()+86400) if state["reserve"] else self.ledger.clock()+86400
+            db.execute("UPDATE issuer SET reserve=reserve+?,valid_until=? WHERE tenant=?", (token_units, expiry, tenant))
             self.ledger._post(db, tenant, "reserve-attestation", reference, state["currency"], [("reserve-bank", amount), ("reserve-source", -amount)], {"proof_hash": request, "mode": "sandbox"})
             return self._state(db, tenant)
+
+    def attest_balance(self,tenant,bank_envelope):
+        """Fresh evidence must cover the entire current reserve balance."""
+        with self.ledger.transaction() as db:
+            self.ledger.assert_payment_writes(db)
+            state=self._state(db,tenant)
+            amount=units(bank_envelope.get("body",{}).get("amount"))
+            proof=SandboxBank(self.ledger).verify(bank_envelope,tenant,"issuer-reserve-balance",state["currency"],amount)
+            if amount*10000!=state["reserve"]:raise Error("reserve_balance_mismatch",409)
+            self.ledger.consume_rail_event(db,tenant,"bank",proof["reference"],"reserve-balance",proof["proof_hash"])
+            db.execute("UPDATE issuer SET valid_until=? WHERE tenant=?",(self.ledger.clock()+86400,tenant))
+            audit(self.ledger,db,tenant,"reserve-balance-attested",proof["reference"],{"balance":state["reserve"],"mode":"sandbox"})
+        return self.state(tenant)
 
     def mint(self, tenant, customer, amount, request_id):
         units(amount); identifier(request_id)
@@ -86,24 +108,28 @@ class Issuer:
             db.execute("INSERT INTO issuer_requests VALUES(?,?,?,?,?)", (tenant, request_id, "mint", request, canonical({"journal": seq})))
             return {"request": request_id, "journal": seq, "mode": "sandbox"}
 
-    def request_redemption(self, tenant, customer, amount, request_id):
+    def request_redemption(self, tenant, customer, amount, request_id, source="customer"):
         units(amount); identifier(request_id)
         if amount % 10_000:
             raise Error("redemption_requires_whole_fiat_minor_units", 400)
-        request = digest([customer, amount])
+        if source not in ("customer","merchant","platform-fees"):raise Error("invalid_redemption_source",400)
+        request = digest([customer, amount]) if source=="customer" else digest([source,amount])
         with self.ledger.transaction() as db:
-            self.ledger.customer(db, tenant, customer)
+            if source=="customer":self.ledger.customer(db, tenant, customer)
+            elif customer is not None:raise Error("unexpected_customer_binding",400)
+            account="customer:"+customer if source=="customer" else source
             old = db.execute("SELECT * FROM redemptions WHERE tenant=? AND id=?", (tenant, request_id)).fetchone()
             if old:
                 if old["request_hash"] != request:
                     raise Error("redemption_reference_conflict")
                 return {**dict(old), "replayed": True}
             state = self._state(db, tenant)
-            available = self.ledger._balance(db, tenant, state["asset"], "customer:" + customer) - self.ledger._held(db, tenant, state["asset"], customer)
+            available = self.ledger._balance(db, tenant, state["asset"], account)
+            if source=="customer":available-=self.ledger._held(db, tenant, state["asset"], customer)
             if available < amount:
                 raise Error("insufficient_available_credits", 402)
-            self.ledger._post(db, tenant, "redemption-burn", request_id, state["asset"], [("customer:" + customer, -amount), ("issuer-liability", amount)])
-            db.execute("INSERT INTO redemptions VALUES(?,?,?,?,?,?,?)", (tenant, request_id, customer, amount, "pending", None, request))
+            self.ledger._post(db, tenant, "redemption-burn", request_id, state["asset"], [(account, -amount), ("issuer-liability", amount)])
+            db.execute("INSERT INTO redemptions(tenant,id,customer,amount,state,payment_reference,request_hash,source) VALUES(?,?,?,?,?,?,?,?)", (tenant, request_id, customer if source=="customer" else source, amount, "pending", None, request,source))
             return {"request": request_id, "state": "pending", "amount": amount}
 
     def confirm_redemption(self, tenant, request_id, bank_envelope):

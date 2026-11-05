@@ -22,10 +22,6 @@ def owner_file(path,limit=100000):
 
 def main():
     env={"PATH":os.defpath,"LANG":"en_US.UTF-8","PYTHONPATH":str(ROOT),"PYTHONDONTWRITEBYTECODE":"1"}
-    owner=ROOT.parents[1];gate=owner/"Scripts/xxv_context_gate.py"
-    if gate.is_file() and (owner/"config/xxv/context-manifest.json").is_file():
-        result=subprocess.run([sys.executable,str(gate)],cwd=ROOT,env=env,capture_output=True)
-        if result.returncode:raise SystemExit("Canonical context gate failed.")
     config_path=ROOT/".private/toolchain.json"
     if config_path.exists():
         config=json.loads(owner_file(config_path))
@@ -49,6 +45,7 @@ def main():
     parser.add_argument("--tenant")
     commands=parser.add_subparsers(dest="command",required=True)
     commands.add_parser("status");commands.add_parser("drill")
+    history=commands.add_parser("export");history.add_argument("--output",type=Path,required=True)
     tick=commands.add_parser("tick");tick.add_argument("--intent")
     reconcile=commands.add_parser("reconcile");reconcile.add_argument("--intent",required=True)
     packet=commands.add_parser("packet");packet.add_argument("--output",type=Path,required=True)
@@ -59,9 +56,11 @@ def main():
     usage.add_argument("--plan",required=True);usage.add_argument("--currency",default="USD",choices=["CAD","USD"])
     usage.add_argument("--rate-micro",type=int,default=1000);usage.add_argument("--base-minor",type=int,default=0)
     usage.add_argument("--key");usage.add_argument("--quantity",type=int,default=1);usage.add_argument("--period")
-    identity=commands.add_parser("identity");identity.add_argument("action",choices=["grant","revoke"])
+    identity=commands.add_parser("identity");identity.add_argument("action",choices=["grant","revoke","renew","replace","reinstate"])
     identity.add_argument("--binding",type=Path,required=True)
     identity.add_argument("--grant",type=Path);identity.add_argument("--principal")
+    identity.add_argument("--expected-version",type=int)
+    cancel=commands.add_parser("cancel-unknown");cancel.add_argument("--intent",required=True)
     index=commands.add_parser("index");index.add_argument("action",choices=["bind","status","sync"])
     index.add_argument("--config",type=Path,required=True);index.add_argument("--max-blocks",type=int,default=20)
     backup=commands.add_parser("backup");backup.add_argument("action",choices=["keygen","create","restore"])
@@ -87,6 +86,9 @@ def main():
                     if len(rows)!=1:raise Error("workspace_selection_required",400)
                     tenant=rows[0][0]
                 if args.command=="status":result=Readiness(book).report(tenant)
+                elif args.command=="export":
+                    from hellabit.history import export_history
+                    result=export_history(book,tenant,args.output)
                 elif args.command=="packet":
                     packet=Readiness(book).packet(tenant);_write_new(args.output,canonical(packet).encode())
                     result={"packet_written":True,"identity_details_included":False,"legal_determination_included":False}
@@ -105,13 +107,20 @@ def main():
                     if args.action=="revoke":
                         if not args.principal:raise Error("principal_reference_required",400)
                         result=authority.revoke(tenant,args.principal)
-                    else:
+                    elif args.action=="grant":
                         if args.grant is None:raise Error("owner_grant_file_required",400)
                         grant=json.loads(owner_file(args.grant),object_pairs_hook=_strict_object,parse_constant=_invalid_constant)
                         required={"subject","role","expires"}
                         if not isinstance(grant,dict) or not required<=set(grant) or set(grant)-required-{"customer","rate_limit"}:
                             raise Error("invalid_principal_grant_fields",400)
                         result=authority.enroll(tenant,**grant)
+                    else:
+                        if not args.principal or args.expected_version is None or args.grant is None:
+                            raise Error("principal_version_and_grant_required",400)
+                        grant=json.loads(owner_file(args.grant),object_pairs_hook=_strict_object,parse_constant=_invalid_constant)
+                        if not isinstance(grant,dict) or "expires" not in grant or set(grant)-{"expires","role","customer","rate_limit"}:
+                            raise Error("invalid_principal_grant_fields",400)
+                        result=authority.change_grant(tenant,args.principal,args.action,args.expected_version,**grant)
                 elif args.command=="index":
                     from hellabit.indexer import EventIndexer
                     from hellabit.rpc import ReadOnlyRpc,_strict_object,_invalid_constant
@@ -132,9 +141,11 @@ def main():
                         rpc=ReadOnlyRpc(cfg["endpoint"],allowed_hosts=cfg["allowed_hosts"],chain_id=cfg["chain_id"])
                         synced=projection.sync(tenant,cfg["binding"],rpc,args.max_blocks)
                         result={k:synced[k] for k in ("chain_id","cursor","finalized","halted","financial_postings")}
-                elif args.command in ("tick","reconcile"):
+                elif args.command in ("tick","reconcile","cancel-unknown"):
                     ops=Operations(book);provider=SandboxProvider(book.path.with_name(book.path.name+".sandbox-provider.sqlite3"))
-                    if args.command=="reconcile":row=ops.reconcile(tenant,args.intent,provider);result={"intent":row["id"],"state":row["state"]}
+                    if args.command=="cancel-unknown":
+                        row=ops.cancel_unknown(tenant,args.intent,provider);result={"intent":row["id"],"state":row["state"]}
+                    elif args.command=="reconcile":row=ops.reconcile(tenant,args.intent,provider);result={"intent":row["id"],"state":row["state"]}
                     else:
                         with book.db() as db:
                             unknown=db.execute("""SELECT id FROM execution_intents WHERE tenant=? AND

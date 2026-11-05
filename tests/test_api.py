@@ -17,6 +17,38 @@ from hellabit.rails import SandboxBank
 ISSUER,AUDIENCE="https://identity.example.invalid","hellabit-api"
 
 class ApiTests(unittest.IsolatedAsyncioTestCase):
+    async def test_grants_renew_after_expiry_and_reinstatement_requires_a_fresh_token(self):
+        now=int(time.time())
+        grant=self.identity.enroll(self.tenant,"long-lived-customer","merchant",now+10)
+        self.book.clock=lambda:now+32*86400
+        renewed=self.identity.change_grant(self.tenant,grant["id"],"renew",grant["version"],expires=now+33*86400)
+        self.assertEqual(renewed["version"],2)
+        with self.assertRaisesRegex(Error,"grant_version_conflict"):
+            self.identity.change_grant(self.tenant,grant["id"],"renew",1,expires=now+33*86400)
+        self.book.clock=lambda:now
+        revoked=self.identity.revoke(self.tenant,grant["id"])
+        with self.assertRaisesRegex(Error,"explicit_reinstatement_required"):
+            self.identity.change_grant(self.tenant,grant["id"],"renew",revoked["version"],expires=now+100)
+        restored=self.identity.change_grant(self.tenant,grant["id"],"reinstate",revoked["version"],expires=now+100)
+        base="/api/v1/workspaces/"+self.tenant
+        self.assertEqual((await self.request("GET",base,token=self.token("long-lived-customer")))[0],403)
+        self.assertEqual((await self.request("GET",base,token=self.token("long-lived-customer",iat=restored["tokens_issued_at_or_after"])))[0],200)
+
+    async def test_internal_errors_have_a_safe_correlated_record(self):
+        secret="synthetic-sensitive-message-never-log"
+        with patch.object(self.app,"route",side_effect=RuntimeError(secret)),self.assertLogs("hellabit.api",level="ERROR") as logs:
+            status,result=await self.request("GET","/api/v1/workspaces/"+self.tenant)
+        self.assertEqual(status,500);self.assertEqual(result["error"],"internal_error")
+        self.assertIn(result["correlation_id"],logs.output[0]);self.assertNotIn(secret,logs.output[0])
+        self.assertNotIn(self.tenant,logs.output[0])
+
+    async def test_authenticated_readiness_distinguishes_quarantine_from_liveness(self):
+        route="/api/v1/workspaces/"+self.tenant+"/ready"
+        self.assertEqual((await self.request("GET",route))[0],200)
+        with self.book.db() as db:db.execute("INSERT INTO settings VALUES('recovery_quarantine','test')")
+        self.assertEqual((await self.request("GET",route))[0],503)
+        self.assertEqual((await self.request("GET","/api/health",token=False))[1]["check"],"liveness")
+
     async def test_slow_chunked_body_has_one_total_deadline(self):
         chunks=0
         async def receive():
