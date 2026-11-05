@@ -6,7 +6,7 @@ A merchant-controlled payment operations engine for API teams: durable payout
 intent, held budgets, original-identity recovery, inspectable results and exact
 usage accounting. Free Apache-2.0 core. No Stripe dependency or compulsory fee.
 
-Version **0.7.0 is a developer preview**. The console moves synthetic value;
+Version **0.8.0 is a developer preview**. The console moves synthetic value;
 real-money submission remains blocked. Canada and the United States are intended
 markets. No bank, public-chain signer, legal issuer or customer is enrolled.
 
@@ -23,10 +23,12 @@ The core console uses only Python's standard library; it stays on `127.0.0.1`.
 
 1. **Paid work:** add test credits, reserve an invoice total check and inspect its
    computed result. Its charge and durable delivery commit together.
-2. Request a test payout. In **Settlement planning**, choose **Test an interrupted
-   reply**. The synthetic provider accepts it, but the reply disappears.
-3. Choose **Check original payment**. Recovery finds that accepted payment and
-   records one settlement. The hold stays reserved while its outcome is unknown.
+2. Request a test payout and open the recovery queue from **Overview**. Choose
+   **Test an interrupted reply**. The test provider accepts it, but the reply
+   disappears. Overview shows the amount held and the affected connection.
+3. Open the queue again and choose **Check original payment**. Recovery finds
+   that accepted payment and records one settlement. The original hold stays
+   reserved while its outcome is unknown.
 4. **Settlement planning** also exports a responsibility packet. Saved documents
    never establish legal approval or activate a financial connection.
 5. **Issuer lab** keeps branded test issuance, reserve assertions and redemption

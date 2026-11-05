@@ -50,7 +50,7 @@ async function value(c,name,args=[]){
   return c.iface.decodeFunctionResult(name,bytesToHex(result.execResult.returnValue))[0];
 }
 const hash=s=>keccak256(toUtf8Bytes(s));
-const observation=(ceiling,sequence,proof,observedAt=timestamp)=>[ceiling,observedAt,observedAt+3600n,sequence,hash(proof)];
+const observation=(ceiling,sequence,proof,observedAt=timestamp,covered=0n)=>[ceiling,observedAt,observedAt+3600n,sequence,covered,hash(proof)];
 const stable=await deploy('AttestedStablecoin',['Example Institution Dollar','EXUSD',hash('example-issuer'),'0x555344',wallets[0].address]);
 check('Issuer starts with zero supply',await value(stable,'totalSupply')===0n);
 check('Unprivileged mint fails',!(await invoke(7,stable,'mint',[wallets[4].address,1n,hash('attack')])).ok);
@@ -74,7 +74,15 @@ check('Unprivileged payout confirmation fails',!(await invoke(7,stable,'confirmR
 check('Named settler can record payout',(await invoke(3,stable,'confirmRedemption',[wallets[4].address,hash('redemption-1'),hash('payout-1')])).ok);
 check('Payout confirmation replay fails',!(await invoke(3,stable,'confirmRedemption',[wallets[4].address,hash('redemption-1'),hash('payout-1')])).ok);
 check('A confirmed redemption survives the deficit and requires fresh reserve evidence',await value(stable,'reserveCeiling')===0n&&await value(stable,'pendingRedemptions')===0n&&await value(stable,'reserveValidUntil')===0n);
-check('Fresh evidence can restore issuance headroom',(await invoke(1,stable,'attestReserve',observation(600_000n,4n,'bank-proof-4'))).ok);
+check('Fresh but delayed evidence cannot restore reserve consumed by a payout',
+  !(await invoke(1,stable,'attestReserve',observation(1_500_000n,4n,'pre-payout-balance'))).ok
+  && await value(stable,'settlementSequence')===1n
+  && !(await invoke(2,stable,'mint',[wallets[4].address,1n,hash('delayed-mint')])).ok);
+check('A reserve observation cannot claim coverage of a future settlement',
+  !(await invoke(1,stable,'attestReserve',observation(1_500_000n,4n,'future-coverage',timestamp,2n))).ok);
+check('Fresh evidence covering the confirmed debit can restore issuance headroom',
+  (await invoke(1,stable,'attestReserve',observation(600_000n,4n,'bank-proof-4',timestamp,1n))).ok
+  && (await invoke(2,stable,'mint',[wallets[4].address,100_000n,hash('mint-after-covered-payout')])).ok);
 check('Compliance freeze succeeds',(await invoke(0,stable,'setFrozen',[wallets[4].address,true])).ok);
 check('Frozen holder cannot transfer',!(await invoke(4,stable,'transfer',[wallets[5].address,1n])).ok);
 check('Compliance unfreeze succeeds',(await invoke(0,stable,'setFrozen',[wallets[4].address,false])).ok);

@@ -10,6 +10,7 @@ import time
 import unittest
 from unittest.mock import patch
 from hellabit.ledger import Ledger,Error,digest
+from hellabit.rails import SandboxBank
 
 ROOT=Path(__file__).resolve().parents[1]
 
@@ -66,3 +67,23 @@ class MigrationTests(unittest.TestCase):
                 self.assertNotIn('grant_id',{r[1] for r in db.execute('PRAGMA table_info(api_principals)')})
                 self.assertEqual(db.execute('SELECT COUNT(*) FROM api_principals').fetchone()[0],1)
             self.assertEqual(Ledger(path).reconcile('hb_legacy')['journal_count'],0)
+
+    def test_open_legacy_writer_cannot_add_movement_after_cutover(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path=Path(tmp)/'legacy.sqlite3'
+            self.legacy(path,'05')
+            older=sqlite3.connect(path, isolation_level=None)
+            try:
+                self.assertEqual(older.execute('PRAGMA user_version').fetchone()[0],0)
+                book=Ledger(path)
+                funded=SandboxBank(book).fund('hb_legacy','agent-01','CAD',100,'one-deposit')
+                self.assertFalse(funded['replayed'])
+                # The legacy writer uses the raw reference rather than the
+                # stored scoped key. Admission fails before it can post.
+                with self.assertRaisesRegex(sqlite3.OperationalError,'hellabit_write_epoch_8'):
+                    older.execute('INSERT INTO rail_events VALUES(?,?,?,?,?)',
+                                  ('hb_legacy','bank','one-deposit','funding','0'*64))
+                self.assertTrue(SandboxBank(book).fund('hb_legacy','agent-01','CAD',100,'one-deposit')['replayed'])
+                self.assertEqual(book.reconcile('hb_legacy')['journal_count'],1)
+            finally:
+                older.close()

@@ -49,7 +49,9 @@ preserved. The resumed ledger retains the provider-store identity and exact writ
 generation. A missing store is an explicit fault. Checkpoints permit restarting the
 same handover, including a candidate published before its directory was synced.
 A sealed pre-activation archive can finish an already fenced handover with the same
-independent provider store when the old ledger is unavailable. A balanced database
+independent provider store when the old ledger is unavailable. Interruption before
+activation may rebuild a lost candidate only from that same authenticated archive.
+Existing published bytes must match the recorded fingerprint. A balanced database
 alone does not establish complete history or cover arbitrary later losses.
 
 Before supporting a live restore, an adapter must reconstruct all missing
@@ -61,6 +63,12 @@ fencing or recover a lost command archive. The operator must also prove
 that provider lookup and idempotency retention cover the entire recovery window.
 Expiry cannot authorize reusing an identity. Those live guarantees are absent
 here, so real execution remains disabled.
+
+For public releases, wait for hosted verification on the final tagged source
+commit. Compare the commit and signed source archive against the workflow's
+`TESTED.json` and attach that receipt to the release with the archive and
+signature. The release attachment remains available after the workflow artifact
+expires.
 
 ## Adapter declaration
 

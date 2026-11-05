@@ -70,13 +70,38 @@ try{
  check('Oversize payout explains the exact shortfall',(await page.locator('#payout-hint').textContent()).includes('0.01 CAD'));
  await click('#use-payout-available');check('Use available changes the payout only after an explicit action',await page.locator('#payout-amount').inputValue()==='0.49'&&!(await page.locator('#request-payout').isDisabled()));await page.fill('#payout-amount','0.50');
  const priorPayouts=new Set((await snapshot()).payouts.map(p=>p.id));
+ const payoutRoute=/\/api\/v1\/workspaces\/[^/]+\/payouts$/;
+ const payoutCommands=[];
+ await page.route(payoutRoute,async route=>{
+   if(route.request().method()!=='POST')return route.continue();
+   payoutCommands.push(route.request().postDataJSON());
+   const response=await route.fetch();
+   return payoutCommands.length===1?route.fulfill({response,body:'incomplete-json'}):route.fulfill({response});
+ });
  await page.fill('#payout-amount','0.20');await click('#request-payout');
  const firstRecovery=(await snapshot()).payouts.find(p=>!priorPayouts.has(p.id));priorPayouts.add(firstRecovery.id);
+ await page.reload();await page.locator('#work-asset').waitFor({state:'visible'});await idle();
+ check('Reload retains a lost payout request and protects its original terms',
+   (await page.locator('#request-payout').textContent()).includes('Recover original payout')
+   && (await page.locator('#payout-hint').textContent()).includes('0.20 CAD')
+   && await page.locator('#payout-amount').isDisabled());
+ await click('#request-payout');
+ check('Recovering after a lost HTTP reply replays one payout instead of creating another',
+   payoutCommands.length===2&&JSON.stringify(payoutCommands[0])===JSON.stringify(payoutCommands[1])
+   &&(await snapshot()).payouts.every(p=>priorPayouts.has(p.id)));
+ await page.unroute(payoutRoute);await page.fill('#payout-amount','0.20');
  await click('#request-payout');const secondRecovery=(await snapshot()).payouts.find(p=>!priorPayouts.has(p.id));
+ check('An explicit new payout may use the same terms after recovery',
+   Boolean(secondRecovery)&&secondRecovery.id!==firstRecovery.id&&secondRecovery.amount===firstRecovery.amount);
  await nav('connections');
  await click(`[data-intent="${firstRecovery.intent_id}"][data-intent-action="interrupt"]`);
  let recoverySnapshot=await snapshot();
  check('Interrupted provider reply preserves the original payout and held proceeds',recoverySnapshot.payouts.find(p=>p.id===firstRecovery.id).state==='pending'&&recoverySnapshot.payouts.find(p=>p.id===firstRecovery.id).intent_state==='unknown');
+ await nav('overview');
+ const attention=await page.locator('#payout-attention').textContent();
+ check('Overview shows held value, the affected connection and how long it has been open',attention.includes('0.20 CAD held')&&attention.includes('sandbox:bank:CAD')&&attention.includes('Oldest opened'));
+ await click('[data-pane="overview"] [data-focus-id="recovery-queue-title"]');
+ check('Opening recovery focuses the relevant queue',await page.locator('#recovery-queue-title').evaluate(e=>e===document.activeElement));
  check('Unknown payment exposes lookup and pauses another payment on the same connection',await page.locator(`[data-intent="${firstRecovery.intent_id}"][data-intent-action="reconcile"]`).isVisible()&&await page.locator(`[data-intent="${secondRecovery.intent_id}"][data-intent-action="process"]`).isDisabled()&&await page.locator('#readiness-unknown').textContent()==='1');
  const paidBefore=recoverySnapshot.journal.filter(j=>j.kind==='payout-paid').length;
  await click(`[data-intent="${firstRecovery.intent_id}"][data-intent-action="reconcile"]`);recoverySnapshot=await snapshot();

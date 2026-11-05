@@ -63,8 +63,10 @@ class AgentPolicy:
             raise Error('agent_purchase_scope_forbidden',403)
         if quote['amount']>policy['per_purchase']:raise Error('agent_purchase_limit_exceeded',403)
 
-    def approve(self,tenant,principal,quote,key):
+    def approve(self,tenant,principal,quote,key,*,renew_expiry=None):
         identifier(principal);identifier(quote);identifier(key)
+        if renew_expiry is not None and (type(renew_expiry) is not int or renew_expiry<0):
+            raise Error('expected_approval_expiry_required',400)
         with self.book.transaction() as db:
             self.book.assert_payment_writes(db);customer,authority=self._subject(db,tenant,principal)
             policy=self._current(db,tenant,principal)
@@ -75,29 +77,70 @@ class AgentPolicy:
             expiry=min(terms['expires'],policy['expires'],self.book.clock()+300)
             scope=(tenant,principal,policy['version'],authority,quote,digest(key))
             old=db.execute('SELECT expires,operation FROM agent_approvals WHERE tenant=? AND principal=? AND version=? AND authority=? AND quote=? AND key_hash=?',scope).fetchone()
-            if old:return {'approved':True,'expires':old['expires'],'used':bool(old['operation']),'replayed':True}
+            if old:
+                status='used' if old['operation'] else 'expired' if old['expires']<=self.book.clock() else 'current'
+                if renew_expiry is None:
+                    return {'approved':status=='current','status':status,'expires':old['expires'],
+                            'used':status=='used','replayed':True}
+                if status!='expired' or old['expires']!=renew_expiry:
+                    raise Error('approval_renewal_requires_exact_expired_unused_approval',409)
+                db.execute("""UPDATE agent_approvals SET expires=? WHERE tenant=? AND principal=? AND version=?
+                    AND authority=? AND quote=? AND key_hash=?""",(expiry,*scope))
+                audit(self.book,db,tenant,'agent-purchase-approval-renewed',principal,
+                      {'quote':quote,'key_hash':scope[-1],'version':policy['version'],
+                       'previous_expiry':renew_expiry,'expires':expiry,'amount':terms['amount']})
+                return {'approved':True,'status':'current','expires':expiry,'used':False,'renewed':True}
+            if renew_expiry is not None:
+                raise Error('approval_renewal_requires_exact_expired_unused_approval',409)
             db.execute('INSERT INTO agent_approvals VALUES(?,?,?,?,?,?,?,NULL)',(*scope,expiry))
             audit(self.book,db,tenant,'agent-purchase-approved',principal,{'quote':quote,'version':policy['version'],'amount':terms['amount'],'expires':expiry})
-            return {'approved':True,'expires':expiry,'used':False}
+            return {'approved':True,'status':'current','expires':expiry,'used':False}
 
     def reserve(self,db,tenant,actor,quote,key_hash,operation):
         principal=actor['id'];policy=self._current(db,tenant,principal)
         authority=actor.get('grant_id',principal)
         if actor['customer']!=policy['customer']:raise Error('agent_policy_customer_changed',403)
         self._quote(policy,quote)
-        day=self.book.clock()//86400;amount=quote['amount']
-        scope=(tenant,principal,quote['asset'],day)
-        old=db.execute('SELECT authorized_units FROM agent_daily_usage WHERE tenant=? AND principal=? AND asset=? AND day=?',scope).fetchone()
-        used=old[0] if old else 0
-        if used+amount>policy['daily']:raise Error('agent_daily_limit_exceeded',403)
-        if amount>policy['approval_above']:
+        self._record_reservation(db,tenant,principal,authority,policy,quote,operation)
+        if quote['amount']>policy['approval_above']:
             changed=db.execute('''UPDATE agent_approvals SET operation=? WHERE tenant=? AND principal=? AND version=?
                 AND authority=? AND quote=? AND key_hash=? AND operation IS NULL AND expires>?''',
                 (operation,tenant,principal,policy['version'],authority,quote['id'],key_hash,self.book.clock())).rowcount
             if changed!=1:raise Error('exact_agent_purchase_approval_required',403)
+
+    def _record_reservation(self,db,tenant,principal,authority,policy,terms,operation):
+        day=self.book.clock()//86400
+        amount=terms['amount']
+        scope=(tenant,principal,terms['asset'],day)
+        old=db.execute('SELECT authorized_units FROM agent_daily_usage WHERE tenant=? AND principal=? AND asset=? AND day=?',scope).fetchone()
+        used=old[0] if old else 0
+        if used+amount>policy['daily']:raise Error('agent_daily_limit_exceeded',403)
         db.execute('INSERT OR REPLACE INTO agent_daily_usage VALUES(?,?,?,?,?)',(*scope,used+amount))
         db.execute('INSERT INTO agent_reservations VALUES(?,?,?,?,?,?,?,?)',
-            (tenant,operation,principal,policy['version'],authority,quote['asset'],day,amount))
+            (tenant,operation,principal,policy['version'],authority,terms['asset'],day,amount))
+
+    def adopt(self,tenant,principal,operation):
+        """The owner may authorize an existing hold without guessing its old grant."""
+        identifier(principal);identifier(operation)
+        with self.book.transaction() as db:
+            self.book.assert_payment_writes(db)
+            held=self.book._operation(db,tenant,operation)
+            if held['state']!='reserved':
+                raise Error('only_reserved_legacy_purchase_can_be_adopted',409)
+            if db.execute('SELECT 1 FROM agent_reservations WHERE tenant=? AND operation=?',(tenant,operation)).fetchone():
+                raise Error('reservation_already_authorized',409)
+            customer,authority=self._subject(db,tenant,principal)
+            policy=self._current(db,tenant,principal)
+            if customer!=held['customer'] or customer!=policy['customer']:
+                raise Error('customer_forbidden',403)
+            quote=db.execute('SELECT * FROM quotes WHERE tenant=? AND id=?',(tenant,held['quote'])).fetchone()
+            if not quote or any(quote[key]!=held[key] for key in ('asset','amount','fee')):
+                raise Error('legacy_quote_evidence_changed',409)
+            self._quote(policy,quote)
+            self._record_reservation(db,tenant,principal,authority,policy,quote,operation)
+            audit(self.book,db,tenant,'agent-legacy-purchase-adopted',operation,
+                  {'principal':principal,'quote':quote['id'],'version':policy['version'],'amount':quote['amount']})
+        return {'adopted':True,'operation':operation,'principal':principal,'policy_version':policy['version']}
 
     def assert_reservation(self,db,tenant,actor,operation,*,executing=False):
         row=db.execute('SELECT principal,version,authority FROM agent_reservations WHERE tenant=? AND operation=?',(tenant,operation)).fetchone()

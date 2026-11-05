@@ -6,7 +6,7 @@ import threading
 from contextlib import closing
 from .ledger import Error,canonical,SCHEMA
 
-VERSION=7
+VERSION=8
 APPLICATION_ID=0x48424757
 _lock=threading.RLock()
 
@@ -34,6 +34,27 @@ CREATE TRIGGER reserve_assessment_no_update BEFORE UPDATE ON reserve_assessments
 CREATE TRIGGER reserve_assessment_no_delete BEFORE DELETE ON reserve_assessments
  BEGIN SELECT RAISE(ABORT,'append_only'); END;
 """
+
+WRITER_TRIGGER = """
+CREATE TRIGGER {trigger} BEFORE {action} ON {table}
+BEGIN SELECT CASE WHEN hellabit_write_epoch_8() IS NOT 8
+    THEN RAISE(ABORT, 'storage_writer_incompatible') END;
+END
+"""
+
+
+def fence_legacy_writers(db):
+    # SQLite enforces this in already-open older runtimes, even if they
+    # never reread the user_version or acquire the application lock.
+    tables = db.execute("SELECT name FROM sqlite_schema WHERE type='table' AND name NOT GLOB 'sqlite_*'").fetchall()
+    for (table,) in tables:
+        for action in ("INSERT", "UPDATE", "DELETE"):
+            trigger = f"storage_v8_{action.lower()}_{table}"
+            db.execute(WRITER_TRIGGER.format(
+                trigger='"' + trigger.replace('"', '""') + '"',
+                table='"' + table.replace('"', '""') + '"',
+                action=action,
+            ))
 
 def execute_script(db,script):
     statement=""
@@ -69,19 +90,29 @@ def upgrade(book):
     schemas={"operations":operations.SCHEMA,"identity":identity.SCHEMA,
              "provider-inbox":inbox.SCHEMA,"indexer":indexer.SCHEMA,
              "metering":metering.SCHEMA,"readiness":readiness.SCHEMA,"issuer-audit":issuer.SCHEMA,"audit-only":""}
-    previous_checksum=hashlib.sha256((SCHEMA+AUDIT_SCHEMA+"".join(schemas.values())+"v6-generation-and-event-scope").encode()).hexdigest()
-    checksum=hashlib.sha256((previous_checksum+SCHEMA_V7+AGENT_POLICY_SCHEMA+"v7-reserve-authority-and-positions").encode()).hexdigest()
+    v6_checksum=hashlib.sha256((SCHEMA+AUDIT_SCHEMA+"".join(schemas.values())+"v6-generation-and-event-scope").encode()).hexdigest()
+    v7_checksum=hashlib.sha256((v6_checksum+SCHEMA_V7+AGENT_POLICY_SCHEMA+"v7-reserve-authority-and-positions").encode()).hexdigest()
+    checksum=hashlib.sha256((v7_checksum+WRITER_TRIGGER+"v8-writer-admission").encode()).hexdigest()
+    known_checksums = {6:v6_checksum,7:v7_checksum,VERSION:checksum}
     with _lock,book.db() as db:
         db.execute("BEGIN IMMEDIATE")
         try:
             current=db.execute("PRAGMA user_version").fetchone()[0]
             if current>VERSION:raise Error("database_requires_newer_gateway",423)
-            if current==VERSION:
-                row=db.execute("SELECT checksum FROM schema_migrations WHERE version=?",(VERSION,)).fetchone()
-                if not row or row[0]!=checksum:raise Error("migration_definition_changed",423)
-            elif current==6:
-                row=db.execute('SELECT checksum FROM schema_migrations WHERE version=6').fetchone()
-                if not row or row[0]!=previous_checksum:raise Error('migration_definition_changed',423)
+            if current < VERSION and "state" in columns(db, "execution_intents"):
+                if db.execute("SELECT 1 FROM execution_intents WHERE state='submitting' LIMIT 1").fetchone():
+                    raise Error("finish_payout_attempts_before_upgrade",423)
+            if current in known_checksums:
+                row=db.execute("SELECT checksum FROM schema_migrations WHERE version=?",(current,)).fetchone()
+                if not row or row[0]!=known_checksums[current]:raise Error("migration_definition_changed",423)
+                if current == 7 and db.execute("""SELECT 1
+                    FROM settlements scoped JOIN journals movement ON movement.seq=scoped.journal
+                    JOIN settlements legacy ON legacy.tenant=scoped.tenant AND legacy.rail=scoped.rail
+                      AND legacy.reference=json_extract(movement.body,'$.metadata.external_reference')
+                      AND legacy.journal<>scoped.journal
+                    JOIN journals original ON original.seq=legacy.journal AND original.asset=movement.asset
+                    LIMIT 1""").fetchone():
+                    raise Error("external_funding_identity_conflict_requires_review",423)
             else:
                 execute_script(db,SCHEMA)
                 for table,fields in {'tenants':{'bootstrap_revoked':'INTEGER NOT NULL DEFAULT 0'},
@@ -134,12 +165,15 @@ def upgrade(book):
                 for row in db.execute('SELECT tenant,valid_until FROM issuer WHERE valid_until<>0').fetchall():
                     audit(book,db,row['tenant'],'reserve-evidence-revalidation-required','schema-v6',{'previous_valid_until':row['valid_until']})
                 db.execute('UPDATE issuer SET valid_until=0')
-                db.execute("INSERT INTO schema_migrations VALUES(?,?,?)",(6,previous_checksum,book.clock()))
-            if current<VERSION:
+                db.execute("INSERT INTO schema_migrations VALUES(?,?,?)",(6,v6_checksum,book.clock()))
+            if current<7:
                 execute_script(db,SCHEMA_V7+AGENT_POLICY_SCHEMA)
                 for row in db.execute('SELECT tenant,valid_until FROM issuer WHERE valid_until<>0').fetchall():
                     audit(book,db,row['tenant'],'reserve-evidence-revalidation-required','schema-v7',{'previous_valid_until':row['valid_until']})
                 db.execute('UPDATE issuer SET valid_until=0')
+                db.execute("INSERT INTO schema_migrations VALUES(?,?,?)",(7,v7_checksum,book.clock()))
+            if current<VERSION:
+                fence_legacy_writers(db)
                 db.execute("INSERT INTO schema_migrations VALUES(?,?,?)",(VERSION,checksum,book.clock()))
                 db.execute("PRAGMA user_version="+str(VERSION));db.execute("PRAGMA application_id="+str(APPLICATION_ID))
                 db.execute("UPDATE settings SET value=? WHERE key='schema_version'",(str(VERSION),))

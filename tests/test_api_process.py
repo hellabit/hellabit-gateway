@@ -16,12 +16,29 @@ from cryptography import x509
 from cryptography.hazmat.primitives import hashes,serialization
 from cryptography.hazmat.primitives.asymmetric import rsa
 from cryptography.x509.oid import NameOID,ExtendedKeyUsageOID
-from hellabit.ledger import Ledger
+from hellabit.ledger import Error,Ledger
 from hellabit.identity import Identity
+from hellabit.api import load_config
 
 ROOT=Path(__file__).resolve().parents[1]
 
 class ApiProcessTests(unittest.TestCase):
+    def test_configuration_rejects_a_replaceable_signing_key(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root=Path(tmp)
+            directory=root/'trust';directory.mkdir(mode=0o700)
+            key=directory/'issuer.pem';key.write_bytes(b'synthetic trust fixture')
+            key.chmod(0o644)
+            path=root/'api.json'
+            path.write_text(json.dumps({'state':'ledger.sqlite3','issuer':'https://issuer.example.invalid',
+                'audience':'hellabit-api','public_keys':{'one':'trust/issuer.pem'},'allowed_hosts':['localhost']}))
+            path.chmod(0o600)
+            self.assertEqual(load_config(path)['public_keys']['one'],key.read_bytes())
+            key.chmod(0o666)
+            with self.assertRaisesRegex(Error,'invalid_identity_public_key'):load_config(path)
+            key.chmod(0o644);directory.chmod(0o770)
+            with self.assertRaisesRegex(Error,'invalid_identity_public_key'):load_config(path)
+
     def test_real_tls_process_authentication_and_owner_route_isolation(self):
         with tempfile.TemporaryDirectory() as tmp:
             root=Path(tmp);now=datetime.now(timezone.utc)

@@ -83,14 +83,19 @@ class Operations:
         with self.book.db() if own else nullcontext(db) as db:
             if own:db.execute('BEGIN')
             self.book.tenant(db, tenant)
+            observed = self.book.clock()
             rows = db.execute("""SELECT * FROM execution_intents WHERE tenant=?
                 ORDER BY CASE state WHEN 'unknown' THEN 0 WHEN 'submitting' THEN 1 WHEN 'prepared' THEN 2 ELSE 3 END,
                 created DESC,rowid DESC LIMIT 30""", (tenant,)).fetchall()
             counts = {r["state"]: r["n"] for r in db.execute(
                 "SELECT state,COUNT(*) n FROM execution_intents WHERE tenant=? GROUP BY state", (tenant,))}
+            attention = [dict(r) for r in db.execute("""SELECT connection,asset,
+                COUNT(*) AS held_count,SUM(amount) AS held_units,MIN(created) AS oldest_created
+                FROM execution_intents WHERE tenant=? AND state IN ('unknown','submitting')
+                GROUP BY connection,asset ORDER BY oldest_created,connection""", (tenant,))]
             projected=[self.public(r,db) for r in rows]
-        return {"intents": projected, "counts": counts, "mode": "sandbox",
-                "live_submission_implemented": False, "observed_at": self.book.clock()}
+        return {"intents": projected, "counts": counts, "attention": attention, "mode": "sandbox",
+                "live_submission_implemented": False, "observed_at": observed}
 
     def _expire(self, db, tenant):
         for row in db.execute("""SELECT id FROM execution_intents WHERE tenant=?

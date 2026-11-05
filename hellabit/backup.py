@@ -11,7 +11,7 @@ import struct
 import tempfile
 import time
 from contextlib import closing
-from .ledger import Error,canonical
+from .ledger import Error,canonical,bind_gateway_writer
 
 LIMIT=1024*1024*1024
 LEGACY_LIMIT=64*1024*1024
@@ -147,7 +147,7 @@ def restore(source,destination,key):
         except sqlite3.DatabaseError:raise Error("backup_database_invalid",400) from None
         # This marker is installed before the destination becomes visible. Even
         # a snapshot taken before a command existed cannot authorize a replay.
-        db=sqlite3.connect(path)
+        db=bind_gateway_writer(sqlite3.connect(path))
         try:
             # Publish a self-contained file. A WAL sidecar in the temporary
             # directory must never contain the quarantine marker at promotion.

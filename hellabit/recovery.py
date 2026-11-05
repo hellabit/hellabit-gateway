@@ -14,7 +14,7 @@ import sqlite3
 import tempfile
 from .backup import LIMIT,_publish_file,create,restore
 from .control import audit,verify_audit
-from .ledger import Ledger,Error,canonical,digest
+from .ledger import Ledger,Error,canonical,digest,bind_gateway_writer,ledger_writer_lock
 
 JOB='recovery_handover'
 STAGE='recovery_candidate_job'
@@ -211,7 +211,7 @@ def _activation_state(destination,job):
 
 
 def _activate(destination,job):
-    db=sqlite3.connect(destination,timeout=15)
+    db=bind_gateway_writer(sqlite3.connect(destination,timeout=15))
     try:
         db.execute('BEGIN IMMEDIATE')
         if _setting(db,PENDING)!=job['id']:raise Error('recovery_activation_binding_changed',423)
@@ -329,31 +329,46 @@ def resume_sealed(archive,key,provider,destination):
         current=db.execute('SELECT generation FROM writer_authority WHERE id=1').fetchone()[0]
     if not record or record['destination']!=str(destination):raise Error('sealed_checkpoint_binding_mismatch',423)
     if record['generation']!=current:raise Error('sealed_checkpoint_fence_changed',423)
+    destination.parent.mkdir(parents=True,exist_ok=True,mode=0o700)
+    with ledger_writer_lock(destination, exclusive=True):
+        return _finish_sealed(archive,key,provider,destination,sha)
+
+
+def _finish_sealed(archive,key,provider,destination,sha):
+    with provider.db() as db:
+        record=db.execute('SELECT * FROM sealed_checkpoints WHERE archive_hash=?',(sha,)).fetchone()
+        current=db.execute('SELECT generation FROM writer_authority WHERE id=1').fetchone()[0]
+    if not record or record['destination']!=str(destination):raise Error('sealed_checkpoint_binding_mismatch',423)
+    if record['generation']!=current:raise Error('sealed_checkpoint_fence_changed',423)
     job={'id':record['job'],'destination':str(destination),'provider':provider.identity,
          'provider_path':str(provider.path),'generation':current}
     state=_activation_state(destination,job)
     if record['activation_claimed'] and state is None:raise Error('sealed_checkpoint_already_used',423)
     if destination.is_symlink() or (destination.exists() and state is None):raise Error('recovery_target_exists',409)
-    destination.parent.mkdir(parents=True,exist_ok=True,mode=0o700)
-    path=destination.parent/('.hellabit-sealed-'+job['id']+'.sqlite3')
+    # The v8 pin is durable before the private file is published. An older
+    # unpinned stage is never used as authority for a new activation.
+    path=destination if state=='pending' else destination.parent/('.hellabit-sealed-'+job['id']+'-v8.sqlite3')
     if state!='active':
         if path.is_symlink():raise Error('unsafe_recovery_candidate_path',423)
         if not path.exists():
             with tempfile.TemporaryDirectory(prefix='.hellabit-seal-restore-',dir=destination.parent) as tmp:
                 candidate=Path(tmp)/'candidate.sqlite3';restore(archive,candidate,key);_check_seal(candidate,job)
-                db=sqlite3.connect(candidate)
+                if _hash(archive)!=sha:raise Error('sealed_checkpoint_binding_mismatch',423)
+                db=bind_gateway_writer(sqlite3.connect(candidate))
                 try:db.execute("DELETE FROM settings WHERE key='recovery_quarantine'");db.commit()
                 finally:db.close()
                 book=Ledger(candidate,_recovery_candidate=True);_verify(book)
                 with provider.db() as external:
                     external.execute('BEGIN');_coverage(book,external,_watermarks(external))
-                _standalone(book);_publish_file(candidate,path)
-        _check_seal(path,job);job['candidate_sha256']=_hash(path)
-        with provider.db() as db:
-            db.execute('BEGIN IMMEDIATE')
-            row=db.execute('SELECT candidate_sha FROM sealed_checkpoints WHERE job=?',(job['id'],)).fetchone()
-            if row[0] not in (None,job['candidate_sha256']):raise Error('sealed_candidate_changed',423)
-            db.execute('UPDATE sealed_checkpoints SET candidate_sha=? WHERE job=?',(job['candidate_sha256'],job['id']))
+                _standalone(book)
+                job['candidate_sha256']=_hash(candidate)
+                _pin_sealed(provider,job,sha,destination,rebuilt=True)
+                _publish_file(candidate,path)
+        else:
+            job['candidate_sha256']=_hash(path)
+        if _hash(path)!=job['candidate_sha256']:raise Error('sealed_candidate_changed',423)
+        _pin_sealed(provider,job,sha,destination,rebuilt=False)
+        _check_seal(path,job)
         _publish(path,destination,job)
         with provider.db() as db:
             db.execute('BEGIN IMMEDIATE')
@@ -364,3 +379,20 @@ def resume_sealed(archive,key,provider,destination):
     return {'resumed':True,'handover_id':job['id'],'profile':'fenced-sealed-checkpoint-synthetic',
             'original_primary_required':False,'provider_binding_preserved':True,
             'unplanned_post_checkpoint_loss_covered':False,'live_payments_enabled':False}
+
+
+def _pin_sealed(provider,job,archive_hash,destination,*,rebuilt):
+    with provider.db() as db:
+        db.execute('BEGIN IMMEDIATE')
+        row=db.execute('SELECT * FROM sealed_checkpoints WHERE job=?',(job['id'],)).fetchone()
+        generation=db.execute('SELECT generation FROM writer_authority WHERE id=1').fetchone()[0]
+        if generation!=job['generation']:raise Error('sealed_checkpoint_fence_changed',423)
+        if not row or (row['archive_hash'],row['generation'],row['destination'])!=(archive_hash,generation,str(destination)):
+            raise Error('sealed_checkpoint_binding_mismatch',423)
+        if row['activation_claimed'] and not destination.is_file():raise Error('sealed_checkpoint_already_used',423)
+        if row['candidate_sha']==job['candidate_sha256']:return
+        # A new pin is allowed only for a fresh authenticated reconstruction,
+        # before any destination was published or activation was claimed.
+        if not rebuilt or row['activation_claimed'] or destination.exists() or destination.is_symlink():
+            raise Error('sealed_candidate_changed',423)
+        db.execute('UPDATE sealed_checkpoints SET candidate_sha=? WHERE job=?',(job['candidate_sha256'],job['id']))

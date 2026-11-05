@@ -160,12 +160,46 @@ class Api:
             fields(());return book.refund(tenant,identifier(tail.split("/")[1]))
         raise Error("api_capability_not_exposed",403)
 
+def _read_trust_file(path, maximum, code, *, private=False):
+    path=Path(os.path.abspath(path))
+    uid=os.getuid()
+    if len(path.parts)>2 and path.parts[1] in ('var','tmp','etc'):
+        alias=Path('/')/path.parts[1]
+        info=alias.lstat()
+        if stat.S_ISLNK(info.st_mode) and info.st_uid==0:
+            path=alias.resolve(strict=True).joinpath(*path.parts[2:])
+    flags=os.O_RDONLY|os.O_NOFOLLOW
+    directory=os.open('/',flags|os.O_DIRECTORY)
+    try:
+        for part in path.parts[1:-1]:
+            child=os.open(part,flags|os.O_DIRECTORY,dir_fd=directory)
+            os.close(directory)
+            directory=child
+            info=os.fstat(directory)
+            sticky_root=info.st_uid==0 and bool(info.st_mode&stat.S_ISVTX)
+            if info.st_uid not in (0,uid) or (info.st_mode&0o022 and not sticky_root):
+                raise Error(code,400)
+        fd=os.open(path.name,flags|os.O_NONBLOCK,dir_fd=directory)
+        with os.fdopen(fd,'rb') as file:
+            info=os.fstat(file.fileno())
+            mode=stat.S_IMODE(info.st_mode)
+            if (not stat.S_ISREG(info.st_mode) or info.st_size>maximum or
+                (private and (info.st_uid!=uid or mode!=0o600)) or
+                (not private and (info.st_uid not in (0,uid) or mode&0o022))):
+                raise Error(code,400)
+            data=file.read(maximum+1)
+            if len(data)>maximum:raise Error(code,400)
+            return data
+    except OSError:
+        raise Error(code,400) from None
+    finally:
+        os.close(directory)
+
+
 def load_config(config_path):
     config_path=Path(config_path)
-    if (config_path.is_symlink() or not config_path.is_file() or config_path.stat().st_uid!=os.getuid() or
-            stat.S_IMODE(config_path.stat().st_mode)!=0o600 or config_path.stat().st_size>32768):
-        raise Error("owner_api_configuration_required",400)
-    config=json.loads(config_path.read_text(),object_pairs_hook=_strict_object,parse_constant=_invalid_constant)
+    raw=_read_trust_file(config_path,32768,'owner_api_configuration_required',private=True)
+    config=json.loads(raw,object_pairs_hook=_strict_object,parse_constant=_invalid_constant)
     required={"state","issuer","audience","public_keys","allowed_hosts"}
     if not isinstance(config,dict) or not required<=set(config) or set(config)-required-{"bind","port","tls_cert","tls_key"}:
         raise Error("invalid_api_configuration",400)
@@ -182,10 +216,7 @@ def load_config(config_path):
     config["state"]=path(config["state"])
     keys={}
     for kid,value in config["public_keys"].items():
-        p=path(value)
-        if p.is_symlink() or not p.is_file() or p.stat().st_size>16384:
-            raise Error("invalid_identity_public_key",400)
-        keys[kid]=p.read_bytes()
+        keys[kid]=_read_trust_file(path(value),16384,'invalid_identity_public_key')
     config["public_keys"]=keys
     for name in ("tls_cert","tls_key"):
         if name in config:config[name]=str(path(config[name]))

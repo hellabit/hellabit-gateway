@@ -56,16 +56,19 @@ def main():
     usage.add_argument("--plan",required=True);usage.add_argument("--currency",default="USD",choices=["CAD","USD"])
     usage.add_argument("--rate-micro",type=int,default=1000);usage.add_argument("--base-minor",type=int,default=0)
     usage.add_argument("--key");usage.add_argument("--quantity",type=int,default=1);usage.add_argument("--period")
+    usage.add_argument("--expected-due-minor",type=int)
     identity=commands.add_parser("identity");identity.add_argument("action",choices=["grant","revoke","renew","replace","reinstate"])
     identity.add_argument("--binding",type=Path,required=True)
     identity.add_argument("--grant",type=Path);identity.add_argument("--principal")
     identity.add_argument("--expected-version",type=int)
-    agent=commands.add_parser('agent-policy');agent.add_argument('action',choices=['set','approve'])
+    agent=commands.add_parser('agent-policy');agent.add_argument('action',choices=['set','approve','renew','adopt'])
     agent.add_argument('--principal',required=True);agent.add_argument('--file',type=Path)
     agent.add_argument('--expected-version',type=int);agent.add_argument('--quote');agent.add_argument('--key')
+    agent.add_argument('--expected-expiry',type=int);agent.add_argument('--operation')
     cancel=commands.add_parser("cancel-unknown");cancel.add_argument("--intent",required=True)
-    index=commands.add_parser("index");index.add_argument("action",choices=["bind","status","sync"])
+    index=commands.add_parser("index");index.add_argument("action",choices=["bind","status","sync","events"])
     index.add_argument("--config",type=Path,required=True);index.add_argument("--max-blocks",type=int,default=20)
+    index.add_argument("--cursor");index.add_argument("--limit",type=int,default=1000)
     backup=commands.add_parser("backup");backup.add_argument("action",choices=["keygen","create","restore"])
     backup.add_argument("--key-file",type=Path);backup.add_argument("--input",type=Path);backup.add_argument("--output",type=Path,required=True)
     recover=commands.add_parser('recover-handover')
@@ -126,9 +129,15 @@ def main():
                         if args.file is None or args.expected_version is None:raise Error('policy_file_and_expected_version_required',400)
                         terms=json.loads(owner_file(args.file,8192),object_pairs_hook=_strict_object,parse_constant=_invalid_constant)
                         result=policy.configure(tenant,args.principal,terms,args.expected_version)
+                    elif args.action=='adopt':
+                        if not args.operation:raise Error('exact_held_operation_required',400)
+                        result=policy.adopt(tenant,args.principal,args.operation)
                     else:
                         if not args.quote or not args.key:raise Error('exact_quote_and_purchase_key_required',400)
-                        result=policy.approve(tenant,args.principal,args.quote,args.key)
+                        if args.action=='renew' and args.expected_expiry is None:
+                            raise Error('expected_approval_expiry_required',400)
+                        result=policy.approve(tenant,args.principal,args.quote,args.key,
+                                              renew_expiry=args.expected_expiry if args.action=='renew' else None)
                 elif args.command=="identity":
                     from hellabit.api import load_config
                     from hellabit.identity import Identity
@@ -154,11 +163,12 @@ def main():
                             raise Error("invalid_principal_grant_fields",400)
                         result=authority.change_grant(tenant,args.principal,args.action,args.expected_version,**grant)
                 elif args.command=="index":
-                    from hellabit.indexer import EventIndexer
+                    from hellabit.indexer import EventIndexer,evm_address
                     from hellabit.rpc import ReadOnlyRpc,_strict_object,_invalid_constant
                     cfg=json.loads(owner_file(args.config),object_pairs_hook=_strict_object,parse_constant=_invalid_constant)
                     required={"binding","chain_id","contract","start_block","endpoint","allowed_hosts"}
                     if not isinstance(cfg,dict) or set(cfg)!=required:raise Error("invalid_indexer_binding",400)
+                    cfg["contract"]=evm_address(cfg["contract"])
                     projection=EventIndexer(book)
                     if args.action=="bind":
                         projection.bind(tenant,cfg["binding"],cfg["chain_id"],cfg["contract"],cfg["start_block"])
@@ -170,9 +180,12 @@ def main():
                         row=projection.state(tenant,cfg["binding"])
                         if any(row[k]!=cfg[k] for k in ("chain_id","contract","start_block")):
                             raise Error("chain_binding_immutable",409)
-                        rpc=ReadOnlyRpc(cfg["endpoint"],allowed_hosts=cfg["allowed_hosts"],chain_id=cfg["chain_id"])
-                        synced=projection.sync(tenant,cfg["binding"],rpc,args.max_blocks)
-                        result={k:synced[k] for k in ("chain_id","cursor","finalized","halted","financial_postings")}
+                        if args.action=="events":
+                            result=projection.event_page(tenant,cfg["binding"],cursor=args.cursor,limit=args.limit)
+                        else:
+                            rpc=ReadOnlyRpc(cfg["endpoint"],allowed_hosts=cfg["allowed_hosts"],chain_id=cfg["chain_id"])
+                            synced=projection.sync(tenant,cfg["binding"],rpc,args.max_blocks)
+                            result={k:synced[k] for k in ("chain_id","cursor","finalized","halted","financial_postings")}
                 elif args.command in ("tick","reconcile","cancel-unknown"):
                     ops=Operations(book);provider=SandboxProvider.for_ledger(book)
                     if args.command=="cancel-unknown":
@@ -192,7 +205,7 @@ def main():
                     elif args.action=="preview":result=meter.preview(tenant,args.plan,args.period)
                     else:
                         if not args.period:raise Error("billing_period_required",400)
-                        result=meter.close(tenant,args.plan,args.period)
+                        result=meter.close(tenant,args.plan,args.period,expected_due_minor=args.expected_due_minor)
         print(canonical({"schema":"hellabit.operator-result.v1","ok":True,"action":args.command,
                          "live_payments_enabled":False,"result":result}))
         return 0
