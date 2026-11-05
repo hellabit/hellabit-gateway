@@ -29,9 +29,12 @@ python3 scripts/operate.py --tenant WORKSPACE_ID reference-case --intent INTENT_
 python3 scripts/operate.py --tenant WORKSPACE_ID resolve-reference-conflict --intent INTENT_ID --expected-case-sha256 CASE_SHA256 --reviewer REVIEWER_REF
 ```
 
-The resolution command rechecks the evidence and records the reviewer and case
-hash with the original settlement in one ledger transaction. A changed case,
-inconclusive settlement, or competing reference leaves the hold in place.
+The case shows the original hold, provider reference, any verified returns and
+the resulting net paid amount. The resolution command rechecks that evidence
+and records the reviewer and case hash with the settlement and its returns in
+one ledger transaction. Export a fresh case if a return arrives after review.
+An unresolved reference, a return without matching provider evidence, or a
+return total above the settlement amount leaves the hold in place.
 `tick` first checks one unknown or expired submission using its original provider
 identity. It does not replace an inconclusive payment. Otherwise it processes
 one prepared intent with the separate synthetic provider. It is bounded work;
@@ -102,7 +105,9 @@ python3 scripts/operate.py --state .private/restored.sqlite3 recover-handover --
 ```
 
 The command locks both histories, verifies that the primary extends the restored
-snapshot, and checks the exact provider identity. It records the retirement and
+snapshot, and checks the exact provider identity. If the primary has an open
+reference conflict, the command stops before retirement. Review the conflict
+on the primary and rerun handover. It records the retirement and
 provider fence durably. It then processes independent receipts and corrections in
 pages, preserving progress and the candidate. The new ledger pins the same provider
 store and its new writer generation. `tick`, `reconcile` and `cancel-unknown` keep
@@ -112,6 +117,24 @@ If interrupted, rerun the same handover command with the same source, provider,
 restored copy and destination. The old writer stays retired. The command verifies a
 candidate that became visible before directory synchronization and completes that
 same activation. Recovered access requires fresh enrollment.
+
+If a previous version already fenced the provider and left a reference conflict
+in the retained candidate, review it through that recorded handover. Supply
+the same restored copy, retired primary, provider store and destination. Use
+the intent and the newly exported case hash for the decision.
+
+```sh
+python3 scripts/operate.py --state "$RESTORED" --tenant "$WORKSPACE" reference-case \
+  --handover-source "$PRIMARY" --provider-state "$PROVIDER" --destination "$DESTINATION" \
+  --intent "$INTENT" --output .private/staged-reference-case.json
+python3 scripts/operate.py --state "$RESTORED" --tenant "$WORKSPACE" resolve-reference-conflict \
+  --handover-source "$PRIMARY" --provider-state "$PROVIDER" --destination "$DESTINATION" \
+  --intent "$INTENT" --expected-case-sha256 "$CASE_SHA256" --reviewer "$REVIEWER"
+```
+
+Rerun the original handover after the decision. This verifies and promotes the
+same candidate. The original primary stays retired and the candidate accepts
+ordinary operations only after activation at the bound destination.
 
 For a **planned cutover with independently retained custody**, add
 `--seal-to PATH --key-file KEY_PATH` to the handover. This prepares an encrypted

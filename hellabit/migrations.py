@@ -91,8 +91,13 @@ def preflight(path, *, allow_pending=False):
         legacy_tenant_only=tables=={'tenants'} and {'id','name','country','token_hash','created'}<=columns(db,'tenants')
         if tables and not legacy_tenant_only and not {'tenants','settings','journals','postings','operations'}<=tables:
             raise Error("foreign_database",423)
-        if not allow_pending and 'settings' in tables and db.execute("SELECT 1 FROM settings WHERE key='recovery_publish_pending'").fetchone():
-            raise Error('recovery_publication_pending',423)
+        if not allow_pending and 'settings' in tables:
+            recovery=dict(db.execute("""SELECT key,value FROM settings
+                WHERE key IN ('recovery_publish_pending','recovery_candidate_job','recovery_active_job')"""))
+            if 'recovery_publish_pending' in recovery:
+                raise Error('recovery_publication_pending',423)
+            if 'recovery_candidate_job' in recovery and recovery['recovery_candidate_job']!=recovery.get('recovery_active_job'):
+                raise Error('recovery_candidate_not_active',423)
 
 def upgrade(book):
     from .control import AUDIT_SCHEMA,audit

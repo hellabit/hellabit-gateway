@@ -269,14 +269,18 @@ class Operations:
               {"state": "awaiting_settlement" if status == "accepted" else state,
                "proof_hash": proof, "source": source, "mode": "sandbox"})
 
-    def _review_provider(self, db):
+    def _review_provider(self, db, handover):
         from .fixtures import SandboxProvider
         binding = SandboxProvider.read_binding(db)
         if not binding:
             raise Error("bound_provider_store_required", 423)
-        return SandboxProvider._open_bound(binding, self.book.path, None)
+        ledger = self.book.path
+        if handover is not None:
+            from .recovery import _review_candidate_binding
+            ledger = _review_candidate_binding(self.book, db, handover, binding)
+        return SandboxProvider._open_bound(binding, ledger, None)
 
-    def _review_reference_case(self, db, external, provider, tenant, intent):
+    def _review_reference_case(self, db, external, provider, tenant, intent, handover):
         row = db.execute("SELECT * FROM execution_intents WHERE tenant=? AND id=?", (tenant,intent)).fetchone()
         if not row:
             raise Error("intent_not_found", 404)
@@ -295,6 +299,7 @@ class Operations:
         if len(inbox) > 64:
             raise Error("provider_reference_review_evidence_limit", 423)
         references = set()
+        inbox_corrections = set()
         for observation in observations:
             evidence = json.loads(observation["body"])
             if digest(evidence) != observation["proof_hash"]:
@@ -307,6 +312,8 @@ class Operations:
             item = evidence["receipt"]
             if item.get("status") in ("accepted","pending","settled","rejected"):
                 references.add(identifier(item.get("reference")))
+            elif item.get("status") in ("returned", "reversed"):
+                inbox_corrections.add(digest(item))
         stored = external.execute("SELECT receipt FROM accepted WHERE key=?", (row["external_key"],)).fetchone()
         receipt = json.loads(stored["receipt"]) if stored else None
         if receipt:
@@ -330,10 +337,46 @@ class Operations:
                        and all(receipt[field] == row[field] for field in ("request_hash","amount","asset","recipient"))
                        and not self._reference_conflict(db, row, receipt))
         original = receipt["reference"] if matches else None
-        has_corrections = external.execute("SELECT 1 FROM corrections WHERE key=? LIMIT 1",
-                                           (row["external_key"],)).fetchone() is not None
+        corrections = external.execute("""SELECT event_id,body FROM corrections WHERE key=?
+            ORDER BY rowid LIMIT 65""", (row["external_key"],)).fetchall()
+        if len(corrections) > 64:
+            raise Error("provider_reference_review_evidence_limit", 423)
+        reviewed, events, problems = [], [], set()
+        total = 0
+        for correction in corrections:
+            event = json.loads(correction["body"])
+            item = {"event_id":correction["event_id"], "proof_sha256":digest(event)}
+            reviewed.append(item)
+            if not matches:
+                continue
+            try:
+                identity, proof = self._adjustment_identity(row, event, original)
+                if event["event_id"] != correction["event_id"]:
+                    raise Error("adjustment_identity_conflict")
+                if db.execute("SELECT 1 FROM rail_events WHERE tenant=? AND rail=? AND reference=?",
+                              (tenant, row["rail"], identity)).fetchone():
+                    raise Error("rail_event_already_consumed")
+            except Error as error:
+                problems.add(error.code)
+                continue
+            total += event["amount"]
+            item.update(reference=event["reference"], status=event["status"], amount_units=event["amount"])
+            events.append(event)
+            inbox_corrections.discard(proof)
+        if total > row["amount"]:
+            problems.add("adjustment_exceeds_payment")
+        if inbox_corrections:
+            problems.add("unconfirmed_inbox_correction")
+        held = self.book._balance(db, tenant, row["asset"], "payout:" + row["payout"])
+        payout = db.execute("SELECT state FROM payouts WHERE tenant=? AND id=?", (tenant,row["payout"])).fetchone()
+        if not payout or payout["state"] != "pending" or held != row["amount"]:
+            problems.add("payout_hold_mismatch")
+        available = matches and not competing and not problems
         case = {
-            "schema":"hellabit.sandbox-reference-review.v1", "workspace":tenant, "intent":intent,
+            "schema":"hellabit.sandbox-reference-review.v2", "workspace":tenant, "intent":intent,
+            "handover_id":handover["id"] if handover else None,
+            "command_hash":row["request_hash"],
+            "ledger_held_units":held,
             "bound_provider_generation_hash":digest([provider.identity, provider.generation]),
             "observation_hashes":[item["proof_hash"] for item in observations],
             "inbox_event_hashes":[item["proof_hash"] for item in inbox],
@@ -342,22 +385,25 @@ class Operations:
                            "original_settled" if ref == original else
                            "original_unresolved" if receipt and ref == receipt["reference"] else
                            "absent_in_bound_sandbox"} for ref in references],
-            "provider_corrections_present":has_corrections,
-            "resolution_available":matches and not competing and not has_corrections,
+            "provider_corrections_present":bool(corrections), "provider_corrections":reviewed,
+            "correction_blockers":sorted(problems),
+            "reviewed_outcome":{"asset":row["asset"], "settled_units":row["amount"],
+                                "returned_units":total, "net_paid_units":row["amount"]-total} if available else None,
+            "resolution_available":available,
         }
-        return {**case, "case_sha256":digest(case)}, receipt, row
+        return {**case, "case_sha256":digest(case)}, receipt, row, events
 
-    def inspect_reference_conflict(self, tenant, intent):
+    def inspect_reference_conflict(self, tenant, intent, *, _handover=None):
         identifier(intent)
         with self.book.db() as db:
             db.execute("BEGIN")
-            provider = self._review_provider(db)
+            provider = self._review_provider(db, _handover)
             with provider.db() as external:
                 external.execute("BEGIN")
-                case, _, _ = self._review_reference_case(db, external, provider, tenant, intent)
+                case, _, _, _ = self._review_reference_case(db, external, provider, tenant, intent, _handover)
         return case
 
-    def resolve_reference_conflict(self, tenant, intent, expected_case_sha256, reviewer):
+    def resolve_reference_conflict(self, tenant, intent, expected_case_sha256, reviewer, *, _handover=None):
         identifier(intent)
         identifier(reviewer)
         if (not isinstance(expected_case_sha256, str) or len(expected_case_sha256) != 64
@@ -366,18 +412,19 @@ class Operations:
         # Keep the provider snapshot locked until the accounting commit exits.
         with ExitStack() as locks, self.book.transaction() as db:
             self.book.assert_payment_writes(db)
+            provider = self._review_provider(db, _handover)
             previous = db.execute("""SELECT body FROM control_audit WHERE tenant=? AND subject=?
                 AND kind='provider-reference-reviewed' ORDER BY seq DESC LIMIT 1""", (tenant,intent)).fetchone()
             if previous:
                 decision = json.loads(previous["body"])["details"]
-                if (decision["case_sha256"],decision["reviewer"]) != (expected_case_sha256,reviewer):
+                if (decision["case_sha256"],decision["reviewer"],decision.get("handover_id")) != (
+                        expected_case_sha256,reviewer,_handover["id"] if _handover else None):
                     raise Error("provider_reference_review_already_recorded")
                 row = db.execute("SELECT * FROM execution_intents WHERE tenant=? AND id=?", (tenant,intent)).fetchone()
                 return {**self.public(row,db), "replayed":True}
-            provider = self._review_provider(db)
             external = locks.enter_context(provider.db())
             external.execute("BEGIN IMMEDIATE")
-            case, receipt, row = self._review_reference_case(db, external, provider, tenant, intent)
+            case, receipt, row, events = self._review_reference_case(db, external, provider, tenant, intent, _handover)
             if not hmac.compare_digest(case["case_sha256"], expected_case_sha256):
                 raise Error("provider_reference_review_case_changed")
             if not case["resolution_available"]:
@@ -386,9 +433,14 @@ class Operations:
             db.execute("INSERT OR IGNORE INTO execution_observations VALUES(?,?,?,?,?,?)",
                        (tenant,intent,proof,canonical(receipt),"reviewed-sandbox",self.book.clock()))
             self._record_provider_outcome(db, row, receipt, proof, "reviewed-sandbox")
+            settled = db.execute("SELECT * FROM execution_intents WHERE tenant=? AND id=?", (tenant,intent)).fetchone()
+            for event in events:
+                self._apply_adjustment(db, settled, event)
             audit(self.book, db, tenant, "provider-reference-reviewed", intent,
                   {"reviewer":reviewer, "case_sha256":expected_case_sha256,
-                   "references":case["references"], "provider_receipt_hash":proof})
+                   "references":case["references"], "provider_receipt_hash":proof,
+                   "provider_corrections":case["provider_corrections"], "reviewed_outcome":case["reviewed_outcome"],
+                   "handover_id":case["handover_id"]})
         return self.get(tenant,intent)
 
     @staticmethod
@@ -494,41 +546,48 @@ class Operations:
         receipt=close(row)
         return self.finish(tenant,intent,receipt,source="lookup")
 
-    def adjust(self, tenant, intent, event, *, verified_event=None):
-        """Append a later returned movement; never rewrite the original settlement."""
+    @staticmethod
+    def _adjustment_identity(row, event, original_reference):
         required={"mode","key","request_hash","status","reference","amount","asset",
                   "recipient","event_id","original_reference"}
         if (not isinstance(event,dict) or set(event)!=required or event["mode"]!="sandbox" or
                 event["status"] not in ("returned","reversed")):
             raise Error("invalid_payment_adjustment",403)
         identifier(event["event_id"]);identifier(event["reference"]);units(event["amount"])
-        proof=digest(event)
+        expected={"key":row["external_key"],"request_hash":row["request_hash"],"asset":row["asset"],
+                  "recipient":row["recipient"],"original_reference":original_reference}
+        if any(type(event[k]) is not type(v) or event[k]!=v for k,v in expected.items()):
+            raise Error("adjustment_binding_mismatch",403)
+        from .events import event_key
+        return event_key(row["tenant"],row["connection"],event["event_id"]),digest(event)
+
+    def adjust(self, tenant, intent, event, *, verified_event=None):
+        """Append a later returned movement; never rewrite the original settlement."""
         with self.book.transaction() as db:
             row=db.execute("SELECT * FROM execution_intents WHERE tenant=? AND id=?",(tenant,intent)).fetchone()
             if not row or row["state"]!="confirmed":raise Error("confirmed_payment_required",409)
-            expected={"key":row["external_key"],"request_hash":row["request_hash"],"asset":row["asset"],
-                      "recipient":row["recipient"],"original_reference":row["reference"]}
-            if any(type(event[k]) is not type(v) or event[k]!=v for k,v in expected.items()):
-                raise Error("adjustment_binding_mismatch",403)
-            from .events import event_key
-            identity=event_key(tenant,row['connection'],event['event_id'])
             if verified_event is not None:
                 binding=db.execute("SELECT provider FROM provider_bindings WHERE tenant=? AND rail=?",(tenant,row["rail"])).fetchone()
                 saved=db.execute("SELECT body FROM provider_inbox WHERE tenant=? AND provider=? AND id=?",(tenant,*verified_event)).fetchone()
                 if not binding or binding[0]!=verified_event[0] or not saved or json.loads(saved[0])["receipt"]!=event:
                     raise Error("verified_provider_event_required",403)
-            old=db.execute("SELECT proof_hash FROM payment_adjustments WHERE tenant=? AND event_key=?",(tenant,identity)).fetchone()
-            if old:
-                if old[0]!=proof:raise Error("adjustment_identity_conflict",409)
-                return {"event":event["event_id"],"replayed":True}
-            total=db.execute("SELECT COALESCE(SUM(amount),0) FROM payment_adjustments WHERE tenant=? AND intent=?",(tenant,intent)).fetchone()[0]
-            if total+event["amount"]>row["amount"]:raise Error("adjustment_exceeds_payment",409)
-            payout=db.execute("SELECT source FROM payouts WHERE tenant=? AND id=?",(tenant,row["payout"])).fetchone()
-            self.book.consume_rail_event(db,tenant,row["rail"],identity,"payout-adjustment",proof)
-            self.book._post(db,tenant,"payout-"+event["status"],identity,row["asset"],
-                            [("clearing:"+row["rail"],-event["amount"]),(payout[0],event["amount"])],
-                            {"original_intent":intent,"proof_hash":proof,"mode":"sandbox"})
-            db.execute("INSERT INTO payment_adjustments VALUES(?,?,?,?,?,?,?,?,?,?,?,?)",
-                       (tenant,intent,event["event_id"],event["status"],event["amount"],event["reference"],proof,canonical(event),self.book.clock(),identity,row['connection'],identity))
-            audit(self.book,db,tenant,"payout-adjusted",intent,{"event":event["event_id"],"proof_hash":proof})
+            return self._apply_adjustment(db, row, event)
+
+    def _apply_adjustment(self, db, row, event):
+        tenant, intent = row["tenant"], row["id"]
+        identity, proof = self._adjustment_identity(row, event, row["reference"])
+        old=db.execute("SELECT proof_hash FROM payment_adjustments WHERE tenant=? AND event_key=?",(tenant,identity)).fetchone()
+        if old:
+            if old[0]!=proof:raise Error("adjustment_identity_conflict",409)
+            return {"event":event["event_id"],"replayed":True}
+        total=db.execute("SELECT COALESCE(SUM(amount),0) FROM payment_adjustments WHERE tenant=? AND intent=?",(tenant,intent)).fetchone()[0]
+        if total+event["amount"]>row["amount"]:raise Error("adjustment_exceeds_payment",409)
+        payout=db.execute("SELECT source FROM payouts WHERE tenant=? AND id=?",(tenant,row["payout"])).fetchone()
+        self.book.consume_rail_event(db,tenant,row["rail"],identity,"payout-adjustment",proof)
+        self.book._post(db,tenant,"payout-"+event["status"],identity,row["asset"],
+                        [("clearing:"+row["rail"],-event["amount"]),(payout[0],event["amount"])],
+                        {"original_intent":intent,"proof_hash":proof,"mode":"sandbox"})
+        db.execute("INSERT INTO payment_adjustments VALUES(?,?,?,?,?,?,?,?,?,?,?,?)",
+                   (tenant,intent,event["event_id"],event["status"],event["amount"],event["reference"],proof,canonical(event),self.book.clock(),identity,row['connection'],identity))
+        audit(self.book,db,tenant,"payout-adjusted",intent,{"event":event["event_id"],"proof_hash":proof})
         return {"event":event["event_id"],"event_key":identity,"connection":row['connection'],"amount":event["amount"],"replayed":False}

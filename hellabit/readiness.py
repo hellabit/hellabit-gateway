@@ -231,7 +231,7 @@ class Readiness:
                                   (tenant,observed)).fetchone()[0] if "api_principals" in tables else 0
             retired=bool(db.execute("SELECT 1 FROM settings WHERE key='recovery_retired'").fetchone())
             quarantine=retired or bool(db.execute("SELECT 1 FROM settings WHERE key IN ('recovery_quarantine','recovery_publish_pending')").fetchone())
-            unresolved=[dict(r) for r in db.execute(f"""SELECT id,connection,asset,amount,created FROM execution_intents
+            unresolved=[dict(r) for r in db.execute(f"""SELECT id,connection,asset,amount,created,last_error FROM execution_intents
                 WHERE tenant=? AND ({AMBIGUOUS} OR state='submitting' AND lease_until<=?)
                 ORDER BY created LIMIT 30""",(tenant,observed))]
             recovery_history={'intents':sum(ops['counts'].values()),'adjustments':db.execute('SELECT COUNT(*) FROM payment_adjustments WHERE tenant=?',(tenant,)).fetchone()[0],
@@ -263,6 +263,8 @@ class Readiness:
                 "personal_or_account_details_included":False,
                 "next_action":"This primary is retired. Inspect its preserved history and operate only the new handover path with fresh access." if retired else
                     "Keep this restored copy isolated. Reconcile missing commands and provider movements and fence the prior writer before promotion." if quarantine else
+                    "Review the original reference and any returns before clearing a disputed payout." if
+                    any(row["last_error"]=="provider_reference_conflict" for row in unresolved) else
                     "Reconcile the original unknown payment identity." if unknown else
                     "Resolve the exact operating role and provider program before enrolling a live connection."}
 

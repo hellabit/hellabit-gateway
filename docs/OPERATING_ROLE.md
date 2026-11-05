@@ -32,9 +32,12 @@ canary. Do not accept real customer funds while these remain unresolved.
 
 ## First merchant, then a funded provider program
 
-For an initial self-use pilot, identify one existing company and its own approved
-settlement account. Compare one type of payment and its statement outcome before
-requesting execution access. Treat each other company as a separate legal entity
+The first pilot profile is one existing Canadian merchant using one approved
+CAD EFT payout account. Ask the institution for a test payout, a test return and
+its separate records for both. Compare the payout command, settlement reference,
+return reference and amounts using the [payout report](OPERATIONS.md#export-the-complete-financial-record)
+and [recovery verifier](PAYOUT-VERIFICATION.md) before requesting execution access.
+Treat each other company as a separate legal entity
 until its actual ownership, activities and provider terms are documented. An
 internal-transaction exclusion has specific conditions; common ownership alone
 is not general permission to provide payment services.
@@ -53,6 +56,18 @@ operator. Direct participation requires a funded operating plan, registration
 where applicable, the rail's admission and testing, and a settlement account or
 settlement agent. A no-founder-cash arrangement is a commercial target, not a
 promise that regulatory, provider, reserve or operating costs disappear.
+
+## Terms used in the pilot
+
+| Term | Meaning in this workflow |
+| --- | --- |
+| Gateway | The software that records instructions, checks authority and tracks the results returned by a payment provider. |
+| Processor | The service that performs payment functions under its own operating arrangements. |
+| Settlement institution | The institution responsible for the account and the movement of funds under the approved program. |
+| Accepted | The provider has durably recorded the original payout and can retrieve it by its original identity. |
+| Settled | Independent provider records confirm the movement at the agreed stage of the rail. |
+| Return | A later movement back against the original payment. The original settlement stays in history. |
+| Reconciliation | Matching instructions and ledger entries against independent settlement and return records. |
 
 - [Canada RPAA section 10](https://laws-lois.justice.gc.ca/eng/acts/R-7.36/section-10.html)
 - [Payments Canada PSP participation](https://www.payments.ca/connect/membership/payment-service-provider-participation)

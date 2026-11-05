@@ -3,7 +3,9 @@
 Run the synthetic exercise from the source root with the same Python and SQLite
 versions as the console. It interrupts an actual sandbox submission after the
 provider accepts it, reads the retained hold from a reopened ledger, and reads
-the settlement and return after recovery. Use `--capture-output PATH` to save
+the settlement and return after recovery. The built-in capture records the
+current source tree hash and rechecks it at the end of the run. Use
+`--capture-output PATH` to save
 the exact evidence for a later check. The command creates a private file at a
 new path.
 
@@ -91,6 +93,13 @@ alongside your test setup. File verification uses no network or ledger writes.
 The built-in exercise writes only to a disposable sandbox. For supplied files,
 the capture process establishes the provenance of the application and provider
 observations.
+
+For a partner test, capture the outbound instruction from the application under
+test and export the settlement and return records from the partner account
+separately. Record the provider's acceptance and settlement meanings, how long
+lookup can take, and how later returns will be discovered. If the provider
+cannot supply complete history for the original identity, mark lookup coverage
+partial and keep the case open for review.
 
 For Hellabit's own synthetic queue, an enrolled read-only operator can inspect
 the exact intent and its current outcome through the SDK. [Operator API](API.md#optional-asgi-interface)

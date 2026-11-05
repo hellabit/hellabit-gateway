@@ -45,6 +45,70 @@ class RecoveryContractTests(unittest.TestCase):
         self.assertEqual(r.returncode,0 if ok else 1,r.stderr+r.stdout)
         return json.loads(r.stdout)
 
+    def reference_conflict(self):
+        self.provider=SandboxProvider.for_ledger(self.book)
+        payout=self.payout("conflict-before-handover")
+        job=self.ops.claim(self.tenant,intent=payout["intent"])
+        receipt=self.provider.submit(job)
+        self.ops.finish(self.tenant,job["id"],{**receipt,"status":"accepted"},lease=job["lease"],source="worker")
+        self.ops.finish(self.tenant,job["id"],{**receipt,"reference":"disputed"})
+        return job
+
+    def restored_snapshot(self):
+        snapshot=self.root/"baseline.hbbackup"
+        key=secrets.token_bytes(32)
+        create(self.book,snapshot,key)
+        path=self.root/"restored.sqlite3"
+        restore(snapshot,path,key)
+        return Ledger(path)
+
+    def test_reference_conflict_stops_handover_before_changing_authority(self):
+        restored=self.restored_snapshot()
+        job=self.reference_conflict()
+        destination=self.root/"new-primary.sqlite3"
+        with self.assertRaisesRegex(Error,"recovery_reference_review_required_before_handover"):
+            handover(restored,self.book,self.provider,destination)
+        self.assertFalse(destination.exists())
+        self.assertEqual(SandboxProvider(self.provider.path).generation,self.provider.generation)
+        self.payout("original-writer-still-available")
+        case=self.ops.inspect_reference_conflict(self.tenant,job["id"])
+        self.ops.resolve_reference_conflict(self.tenant,job["id"],case["case_sha256"],"reviewer-1")
+        self.assertTrue(handover(restored,self.book,self.provider,destination)["resumed"])
+        self.assertEqual(Operations(Ledger(destination)).get(self.tenant,job["id"])["net_paid_units"],50)
+
+    def test_retained_pre_upgrade_handover_can_finish_through_a_job_bound_case(self):
+        restored=self.restored_snapshot()
+        job=self.reference_conflict()
+        destination=self.root/"new-primary.sqlite3"
+        # Recreate the previous ordering with actual provider, fence and staging.
+        with patch("hellabit.recovery._preflight"):
+            with self.assertRaisesRegex(Error,"provider_reference_conflict"):
+                handover(restored,self.book,self.provider,destination)
+        stage,=self.root.glob(".hellabit-handover_*.sqlite3")
+        with self.assertRaisesRegex(Error,"recovery_candidate_not_active"):
+            Ledger(stage)
+        with self.assertRaisesRegex(Error,"previous_writer_retired"):
+            self.payout("old-primary-fenced")
+        self.provider.return_payment(job["external_key"],"post-fence-return",20)
+        options=("--intent",job["id"],"--handover-source",self.book.path,
+                 "--provider-state",self.provider.path,"--destination",destination)
+        case_path=self.root/"staged-review.json"
+        proof=self.cli(restored.path,"reference-case",*options,"--output",case_path)["result"]
+        self.assertTrue(proof["resolution_available"])
+        self.assertTrue(proof["handover_id"].startswith("handover_"))
+        case=json.loads(case_path.read_text())
+        self.assertEqual(case["reviewed_outcome"]["net_paid_units"],30)
+        outcome=self.cli(restored.path,"resolve-reference-conflict",*options,
+                         "--expected-case-sha256",proof["case_sha256"],"--reviewer","reviewer-1")["result"]
+        self.assertTrue(outcome["resume_required"])
+        self.assertFalse(destination.exists())
+        self.assertTrue(self.cli(restored.path,"recover-handover","--authoritative-state",self.book.path,
+                                "--provider-state",self.provider.path,"--output",destination)["result"]["resumed"])
+        active=Ledger(destination)
+        self.assertEqual(Operations(active).get(self.tenant,job["id"])["net_paid_units"],30)
+        self.assertEqual(self.provider.accepted_count(),1)
+        self.assertTrue(active.reconcile(self.tenant)["ok"])
+
     def test_failure_after_provider_fencing_preserves_histories_and_stops_both_writers(self):
         key=secrets.token_bytes(32);snapshot=self.root/'old.hbbackup';create(self.book,snapshot,key)
         payout=self.payout();job=self.ops.claim(self.tenant);self.provider.submit(job)
