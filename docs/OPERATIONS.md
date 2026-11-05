@@ -54,12 +54,33 @@ new destination visible. It never replaces the running database. Version 2
 backups stream bounded 1 MiB chunks and support databases up to 1 GiB; legacy
 version 1 backups remain readable. Status reports capacity and warns at 80 percent.
 
-Every restored copy starts in financial quarantine. New holds, financial postings
-and payment-worker claims fail closed, even if the snapshot predates a payout.
-Use the copy for inspection. No quarantine-clearing command or automatic
-promotion is provided. A live recovery implementation must reconcile missing
-commands, original provider movements and later corrections, and independently
-fence old writers before authorizing execution. See [the recovery contract](CONFORMANCE.md).
+Every restored copy starts in quarantine. New holds, financial postings, worker
+claims and external bearer-token reads fail closed, even if the snapshot predates
+a payout or access revocation. Owner-local inspection remains available.
+
+For a single-host synthetic handover when the current primary is intact:
+
+```sh
+python3 scripts/operate.py --state .private/restored.sqlite3 recover-handover --authoritative-state .private/ledger.sqlite3 --provider-state .private/ledger.sqlite3.sandbox-provider.sqlite3 --output .private/resumed.sqlite3
+```
+
+The command locks both histories, checks that the current primary extends the
+snapshot, verifies both financial and control chains, and checks complete provider
+history against exact command terms. It copies the complete primary, including
+commands, purchases and revocations created after the snapshot. It fences the
+independent synthetic provider's old workers, reconciles receipts and later
+returns, retires the previous primary and revokes every previous credential.
+Start the new path and explicitly enroll fresh access. Uncertain payments retain
+their original identity and hold. Source and restored histories are preserved.
+A failure after fencing leaves the old primary quarantined and stops; it never
+revives an old credential automatically.
+
+This profile requires an intact authoritative primary and a dedicated synthetic
+provider store. It is not catastrophic archive recovery, cross-host fencing, bank
+credential revocation or production promotion. If the current primary is lost,
+a complete independent command archive and an enrolled provider recovery contract
+are required. There is no unconditional quarantine-clearing command. See
+[the recovery contract](CONFORMANCE.md).
 
 ## Close a payment proven never accepted
 
@@ -147,7 +168,9 @@ newer authority. `replace` accepts deliberate role/customer/rate changes;
 `reinstate` explicitly reauthorizes a revoked principal. Both use the same
 principal/version/private-file arguments. A subject cannot be silently reenrolled.
 Existing tokens do not gain renewed or reinstated authority: obtain an access
-token issued at or after the returned `tokens_issued_at_or_after` time. Identity,
+token containing the new opaque `token_claims.hellabit_grant` value returned by
+the grant command. The enrolled identity provider must include that value in its
+signed access token. Clock skew never transfers an old token to a new grant. Identity,
 revocation and every grant version remain auditable.
 
 The configuration state must match the selected database. RS256 signatures,
@@ -219,3 +242,20 @@ preceding line. Credentials, lease secrets and payment authority are excluded.
 The file is confidential: it includes customer inputs and financial records.
 It is owner-only, refuses overwrite, and is an audit export rather than a tool
 that restores provider authority or replaces encrypted backups.
+
+## Storage upgrades and request revocation
+
+Opening a supported older database runs the versioned storage migration in one
+SQLite transaction before any component serves a request. A failed migration
+rolls back its schema and version; newer or foreign databases are rejected before
+a writable connection opens. Original financial identities and journal hashes
+are retained. Legacy reserve freshness is invalidated and needs a new full-balance
+observation. Existing API subjects receive a fresh grant generation and require
+new signed tokens. Keep an encrypted pre-upgrade backup outside the primary's
+failure domain.
+
+Authorization is checked at admission and again after the request body arrives.
+Each financial transaction validates the same current local grant while holding
+the SQLite write lock and before commit. A revocation committed first prevents the
+financial write. An admitted read may finish if revocation occurs after read
+admission; reads are not retroactively canceled.

@@ -54,6 +54,46 @@ jobs:
       - run: python3 scripts/bootstrap_api.py
       - run: npx playwright install --with-deps chromium
       - run: python3 scripts/verify.py
+      - name: Retain the exact tested package and commit-bound receipt
+        run: |
+          python3 - <<'PY'
+          import hashlib
+          import json
+          import os
+          import shutil
+          from pathlib import Path
+          result = json.loads(Path('evidence/terminal-result.json').read_text())
+          if result.get('status') != 'local-verified' or not result.get('ok'):
+              raise SystemExit('Complete verification is required')
+          archive = Path(result['archive'])
+          actual = hashlib.sha256(archive.read_bytes()).hexdigest()
+          if actual != result['archiveSha256']:
+              raise SystemExit('Tested package changed')
+          target = Path('release/ci-tested')
+          target.mkdir()
+          shutil.copyfile(archive, target / archive.name)
+          receipt = {
+              'schema': 'hellabit.ci-tested-artifact.v1',
+              'repository': os.environ['GITHUB_REPOSITORY'],
+              'commit': os.environ['GITHUB_SHA'],
+              'run': os.environ['GITHUB_RUN_ID'],
+              'attempt': os.environ['GITHUB_RUN_ATTEMPT'],
+              'archive': archive.name,
+              'archiveSha256': actual,
+              'sourceTreeSha256': result['sourceTreeSha256'],
+              'verification': 'passed',
+              'productionReady': False,
+              'externalTransactions': 0,
+          }
+          (target / 'TESTED.json').write_text(json.dumps(receipt, indent=2, sort_keys=True) + '\n')
+          PY
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: hellabit-tested-${{ github.sha }}
+          path: release/ci-tested/*
+          if-no-files-found: error
+          retention-days: 30
+          compression-level: 0
       - name: Report verification failure
         if: failure()
         run: |

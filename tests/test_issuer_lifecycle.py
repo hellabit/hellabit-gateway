@@ -4,6 +4,7 @@ import unittest
 from hellabit.ledger import Ledger,Error
 from hellabit.issuer import Issuer
 from hellabit.rails import SandboxBank
+from hellabit.ledger import digest
 
 class IssuerLifecycleTests(unittest.TestCase):
     def setUp(self):
@@ -14,22 +15,54 @@ class IssuerLifecycleTests(unittest.TestCase):
 
     def tearDown(self):self.tmp.cleanup()
 
+    def test_unused_old_balance_evidence_cannot_refresh_reserves(self):
+        self.issuer.attest(self.tenant,self.bank.deposit_event(self.tenant,'issuer-reserve','USD',10000,'initial-deposit'))
+        unused=self.bank.balance_event(self.tenant,'USD',10000,'unused-observation')
+        self.now+=366*86400
+        with self.assertRaisesRegex(Error,'balance_observation_stale'):self.issuer.attest_balance(self.tenant,unused)
+        with self.assertRaisesRegex(Error,'reserve_evidence_stale'):self.issuer.mint(self.tenant,'agent-01',10000,'stale-mint')
+
+    def test_balance_observation_sequence_and_authenticated_time_are_enforced(self):
+        self.issuer.attest(self.tenant,self.bank.deposit_event(self.tenant,'issuer-reserve','USD',10000,'initial-deposit'))
+        first=self.bank.balance_event(self.tenant,'USD',10000,'observation-1')
+        second=self.bank.balance_event(self.tenant,'USD',10000,'observation-2')
+        self.issuer.attest_balance(self.tenant,second)
+        with self.assertRaisesRegex(Error,'reserve_observation_out_of_order'):self.issuer.attest_balance(self.tenant,first)
+        tampered={**second,'body':{**second['body'],'observed_at':self.now+1}}
+        with self.assertRaises(Error):self.issuer.attest_balance(self.tenant,tampered)
+        expiry=self.issuer.state(self.tenant)['valid_until'];self.now+=30
+        self.assertTrue(self.issuer.attest_balance(self.tenant,second)['replayed'])
+        self.assertEqual(self.issuer.state(self.tenant)['valid_until'],expiry)
+
+    def test_redemption_identity_distinguishes_customer_named_merchant_from_proceeds(self):
+        self.book.add_customer(self.tenant,'merchant')
+        self.issuer.attest(self.tenant,self.bank.deposit_event(self.tenant,'issuer-reserve','USD',10000,'initial-deposit'))
+        self.issuer.mint(self.tenant,'merchant',1000000,'mint-merchant-customer')
+        self.issuer.request_redemption(self.tenant,'merchant',10000,'same-command')
+        with self.assertRaisesRegex(Error,'redemption_reference_conflict'):
+            self.issuer.request_redemption(self.tenant,None,10000,'same-command',source='merchant')
+        with self.book.db() as db:
+            db.execute('UPDATE redemptions SET request_hash=? WHERE id=?',(digest(['merchant',10000]),'same-command'))
+        self.assertTrue(self.issuer.request_redemption(self.tenant,'merchant',10000,'same-command')['replayed'])
+        with self.assertRaisesRegex(Error,'redemption_reference_conflict'):
+            self.issuer.request_redemption(self.tenant,None,10000,'same-command',source='merchant')
+
     def test_a_small_new_deposit_cannot_refresh_a_stale_reserve_pool(self):
         def deposit(amount,reference):
-            return self.issuer.attest(self.tenant,self.bank.event(self.tenant,"issuer-reserve","USD",amount,reference))
+            return self.issuer.attest(self.tenant,self.bank.deposit_event(self.tenant,"issuer-reserve","USD",amount,reference))
         deposit(100000,"original-reserve")
         self.now+=366*86400
         state=deposit(1,"tiny-new-deposit")
         self.assertFalse(state["reserve_current"])
         with self.assertRaisesRegex(Error,"reserve_evidence_stale"):
             self.issuer.mint(self.tenant,"agent-01",10000,"mint-with-stale-pool")
-        bad=self.bank.event(self.tenant,"issuer-reserve-balance","USD",1,"incomplete-balance")
+        bad=self.bank.balance_event(self.tenant,"USD",1,"incomplete-balance")
         with self.assertRaisesRegex(Error,"reserve_balance_mismatch"):self.issuer.attest_balance(self.tenant,bad)
-        full=self.bank.event(self.tenant,"issuer-reserve-balance","USD",100001,"full-current-balance")
+        full=self.bank.balance_event(self.tenant,"USD",100001,"full-current-balance")
         self.assertTrue(self.issuer.attest_balance(self.tenant,full)["reserve_current"])
 
     def test_merchant_earnings_have_a_complete_redemption_lifecycle(self):
-        self.issuer.attest(self.tenant,self.bank.event(self.tenant,"issuer-reserve","USD",10000,"reserves"))
+        self.issuer.attest(self.tenant,self.bank.deposit_event(self.tenant,"issuer-reserve","USD",10000,"reserves"))
         self.issuer.mint(self.tenant,"agent-01",10000000,"mint")
         asset="issued:"+self.tenant
         q=self.book.create_quote(self.tenant,asset,1000000,10000)["quote"]

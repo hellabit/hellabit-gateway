@@ -84,7 +84,7 @@ class Api:
                     try:body=json.loads(chunks,object_pairs_hook=_strict_object,parse_constant=_invalid_constant)
                     except (ValueError,UnicodeError,RecursionError):raise Error("invalid_json",400) from None
                     if not isinstance(body,dict):raise Error("json_object_required",400)
-                result=await asyncio.to_thread(self.route,principal,method,path,body)
+                result=await asyncio.to_thread(self.identity.dispatch,principal,self.route,method,path,body)
         except Error as error:
             status,result=error.status,{"error":error.code}
         except asyncio.TimeoutError:

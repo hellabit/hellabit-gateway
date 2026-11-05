@@ -141,7 +141,13 @@ class Handler(BaseHTTPRequestHandler):
         self._dispatch(False)
 
     def do_POST(self):
-        self._dispatch(True)
+        with self.server.book.request_authority(self._write_authority):self._dispatch(True)
+
+    def _write_authority(self,db):
+        if self._owner():return
+        auth=self.headers.get('Authorization','')
+        if not auth.startswith('Bearer '):raise Error('unauthorized',401)
+        self.server.book.key_principal(db,auth[7:])
 
     def _dispatch(self, mutation):
         try:
@@ -223,6 +229,7 @@ class Handler(BaseHTTPRequestHandler):
                     self._reply(book.delivery(tenant, tail.split("/")[1])); return
                 raise Error("route_not_found", 404)
             body = self._body()
+            principal=self._authorize(tenant,owner_only=owner_only)
             if principal["role"] == "agent" and tail == "operations" and body.get("customer") != principal["customer"]:
                 raise Error("customer_forbidden", 403)
             if tail == "customers":
@@ -270,8 +277,8 @@ class Handler(BaseHTTPRequestHandler):
             elif tail in ("issuer/attest","issuer/attest-balance"):
                 fields(body, ["fiat_minor_units", "reference"])
                 state = issuer.state(tenant)
-                purpose="issuer-reserve-balance" if tail.endswith("balance") else "issuer-reserve"
-                event = SandboxBank(book).event(tenant, purpose, state["currency"], body["fiat_minor_units"], body["reference"])
+                bank=SandboxBank(book)
+                event = bank.balance_event(tenant,state['currency'],body['fiat_minor_units'],body['reference']) if tail.endswith('balance') else bank.deposit_event(tenant,'issuer-reserve',state['currency'],body['fiat_minor_units'],body['reference'])
                 result = issuer.attest_balance(tenant,event) if tail.endswith("balance") else issuer.attest(tenant, event)
             elif tail in ("issuer/mint", "issuer/redeem"):
                 fields(body, ["customer", "amount", "reference"],[] if tail.endswith("mint") else ["source"])

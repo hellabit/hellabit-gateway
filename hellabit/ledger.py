@@ -9,6 +9,9 @@ import re
 import secrets
 import sqlite3
 import time
+import contextvars
+import fcntl
+import stat
 from contextlib import contextmanager
 
 MAX_AMOUNT = 10**12
@@ -125,18 +128,12 @@ class Ledger:
         self.path = raw.resolve()
         self.path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
         self.clock = clock or (lambda: int(time.time()))
+        self._request_guard=contextvars.ContextVar("hellabit_request_guard",default=None)
+        from .migrations import preflight,upgrade
+        preflight(self.path)
         old = os.umask(0o077)
         try:
-            with self.db() as db:
-                db.executescript(SCHEMA)
-                if 'bootstrap_revoked' not in {row[1] for row in db.execute('PRAGMA table_info(tenants)')}:
-                    db.execute('ALTER TABLE tenants ADD COLUMN bootstrap_revoked INTEGER NOT NULL DEFAULT 0')
-                columns = {row[1] for row in db.execute('PRAGMA table_info(quotes)')}
-                for name in ['work_input', 'input_hash']:
-                    if name not in columns:
-                        db.execute('ALTER TABLE quotes ADD COLUMN ' + name + ' TEXT')
-                db.execute("INSERT OR IGNORE INTO settings VALUES('sandbox_rail_key',?)", (secrets.token_hex(32),))
-                db.execute("INSERT OR IGNORE INTO settings VALUES('schema_version','1')")
+            with self.writer_lock():upgrade(self)
         finally:
             os.umask(old)
         os.chmod(self.path, 0o600)
@@ -151,11 +148,39 @@ class Ledger:
         return db
 
     @contextmanager
+    def writer_lock(self,exclusive=False):
+        """One-host writer fence, deliberately outside database snapshots."""
+        path=self.path.with_name(self.path.name+'.writer.lock')
+        fd=os.open(path,os.O_RDWR|os.O_CREAT|os.O_NOFOLLOW,0o600)
+        try:
+            info=os.fstat(fd)
+            if not stat.S_ISREG(info.st_mode) or info.st_uid!=os.getuid() or stat.S_IMODE(info.st_mode)!=0o600:
+                raise Error('unsafe_writer_lock',423)
+            until=time.monotonic()+15
+            while True:
+                try:fcntl.flock(fd,(fcntl.LOCK_EX if exclusive else fcntl.LOCK_SH)|fcntl.LOCK_NB);break
+                except BlockingIOError:
+                    if time.monotonic()>=until:raise Error('writer_fence_busy',423) from None
+                    time.sleep(0.01)
+            yield
+        finally:os.close(fd)
+
+    @contextmanager
     def transaction(self):
+        with self.writer_lock():
+            with self._transaction() as db:yield db
+
+    @contextmanager
+    def _transaction(self):
         db = self.db()
         try:
             db.execute("BEGIN IMMEDIATE")
+            if db.execute("SELECT 1 FROM settings WHERE key='recovery_retired'").fetchone():
+                raise Error('previous_writer_retired',423)
+            guard=self._request_guard.get()
+            if guard:guard(db)
             yield db
+            if guard:guard(db)
             db.execute("COMMIT")
         except BaseException:
             if db.in_transaction:
@@ -163,6 +188,12 @@ class Ledger:
             raise
         finally:
             db.close()
+
+    @contextmanager
+    def request_authority(self,guard):
+        token=self._request_guard.set(guard)
+        try:yield
+        finally:self._request_guard.reset(token)
 
     def tenant(self, db, tenant):
         identifier(tenant)
@@ -173,7 +204,7 @@ class Ledger:
 
     def assert_payment_writes(self, db):
         """A restored snapshot cannot authorize new financial effects."""
-        if db.execute("SELECT 1 FROM settings WHERE key='recovery_quarantine'").fetchone():
+        if db.execute("SELECT 1 FROM settings WHERE key IN ('recovery_quarantine','recovery_retired')").fetchone():
             raise Error("restored_database_quarantined", 423)
 
     def create_tenant(self, name, country="CA"):
@@ -194,19 +225,22 @@ class Ledger:
         return self.principal(token)["tenant"]
 
     def principal(self, token):
-        if not isinstance(token, str) or len(token) > 200:
-            raise Error("unauthorized", 401)
-        with self.db() as db:
-            row = db.execute("SELECT id FROM tenants WHERE token_hash=? AND bootstrap_revoked=0", (hashlib.sha256(token.encode()).hexdigest(),)).fetchone()
-            if row:
-                return {"tenant": row[0], "role": "merchant", "customer": None}
-            row = db.execute("SELECT tenant FROM merchant_keys WHERE key_hash=? AND revoked=0", (hashlib.sha256(token.encode()).hexdigest(),)).fetchone()
-            if row:
-                return {"tenant": row[0], "role": "merchant", "customer": None}
-            row = db.execute("SELECT tenant,subject FROM agent_keys WHERE key_hash=? AND revoked=0", (hashlib.sha256(token.encode()).hexdigest(),)).fetchone()
-            if row:
-                return {"tenant": row[0], "role": "agent", "customer": row[1]}
-            raise Error("unauthorized", 401)
+        with self.db() as db:return self.key_principal(db,token)
+
+    def key_principal(self,db,token):
+        if not isinstance(token,str) or len(token)>200:raise Error('unauthorized',401)
+        if db.execute("SELECT 1 FROM settings WHERE key IN ('recovery_quarantine','recovery_retired')").fetchone():
+            raise Error("restored_database_quarantined",423)
+        row = db.execute("SELECT id FROM tenants WHERE token_hash=? AND bootstrap_revoked=0", (hashlib.sha256(token.encode()).hexdigest(),)).fetchone()
+        if row:
+            return {"tenant": row[0], "role": "merchant", "customer": None}
+        row = db.execute("SELECT tenant FROM merchant_keys WHERE key_hash=? AND revoked=0", (hashlib.sha256(token.encode()).hexdigest(),)).fetchone()
+        if row:
+            return {"tenant": row[0], "role": "merchant", "customer": None}
+        row = db.execute("SELECT tenant,subject FROM agent_keys WHERE key_hash=? AND revoked=0", (hashlib.sha256(token.encode()).hexdigest(),)).fetchone()
+        if row:
+            return {"tenant": row[0], "role": "agent", "customer": row[1]}
+        raise Error("unauthorized", 401)
 
     def issue_merchant_key(self, tenant):
         key, id_ = "hb_test_" + secrets.token_hex(24), "key_" + secrets.token_hex(12)
@@ -519,7 +553,8 @@ class Ledger:
                 amount = db.execute('SELECT COALESCE(SUM(delta),0) FROM postings WHERE journal=? AND delta>0', (x['seq'],)).fetchone()[0]
                 events.append({"seq": x["seq"], "kind": x["kind"], "asset": x["asset"], "amount": amount, "reference": x["reference"], "digest": x["digest"], "created": x["created"]})
             enrollments = [{"rail": x["rail"], "fields": json.loads(x["body"]), "status": "prepared", "externally_verified": False} for x in db.execute("SELECT * FROM enrollments WHERE tenant=?", (tenant,))]
-            payouts = [dict(x) for x in db.execute("SELECT id,asset,amount,source,recipient,state,payment_reference FROM payouts WHERE tenant=? ORDER BY rowid DESC LIMIT 20", (tenant,))]
+            from .outcomes import payout_view
+            payouts = [payout_view(db,x) for x in db.execute("SELECT * FROM payouts WHERE tenant=? ORDER BY rowid DESC LIMIT 20", (tenant,))]
             counts = {x['state']: x['count'] for x in db.execute('SELECT state,COUNT(*) AS count FROM operations WHERE tenant=? GROUP BY state', (tenant,))}
             return {"workspace": info, "mode": "sandbox", "customer": customer, "assets": assets, "operations": ops, "operation_counts": counts, "journal": events, "journal_count": db.execute('SELECT COUNT(*) FROM journals WHERE tenant=?', (tenant,)).fetchone()[0], "observed_at": self.clock(), "enrollments": enrollments, "payouts": payouts, "readiness": {"bank": "institution-enrollment-required", "usdc": "network-and-signer-enrollment-required", "issuer": "legal-issuer-and-reserves-required"}, "live_payments_enabled": False}
 

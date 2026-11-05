@@ -31,7 +31,8 @@ from sending that key. Providers without this guarantee must keep the hold and
 escalate to the institution; the gateway cannot manufacture cancellation.
 
 Returns and reversals are separately identified movements referencing the
-original settlement. They append compensating postings, deduplicate independently,
+original settlement. Their canonical identity includes workspace, connection and external event ID.
+They append compensating postings, deduplicate independently,
 and cannot exceed the original amount. Fees, disputed balances and other provider
 adjustments require their own supported event contracts.
 
@@ -40,13 +41,18 @@ adjustments require their own supported event contracts.
 An authenticated restore always starts in financial quarantine, including a
 snapshot taken before a payment intent existed. It supports inspection and
 internal reconciliation; financial postings, new holds and worker claims fail
-closed. This release provides no automatic promotion or quarantine-clearing
-command. A balanced database does not establish a complete financial history.
+closed. External credentials also fail during quarantine. The single-host synthetic
+handover command requires a complete intact authoritative primary, verifies its
+history extends the snapshot, fences provider workers, retains all later commands
+and revokes all previous access. It creates a new path; source histories remain
+preserved. A balanced database alone does not establish complete history.
 
 Before supporting a live restore, an adapter must reconstruct all missing
 commands, provider movements and later corrections; reconcile their exact terms;
 and fence every previous writer with authority outside the restored database.
-Database leases alone cannot provide that fencing. The operator must also prove
+The included one-host file lock and independent fixture-store generation prove
+the synthetic handover profile. Database leases alone cannot provide live
+fencing or recover a lost command archive. The operator must also prove
 that provider lookup and idempotency retention cover the entire recovery window.
 Expiry cannot authorize reusing an identity. Those live guarantees are absent
 here, so real execution remains disabled.

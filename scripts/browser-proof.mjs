@@ -200,6 +200,36 @@ try{
  await page.setViewportSize({width:390,height:844});await page.emulateMedia({reducedMotion:'reduce'});
  await nav('issuer');check('Issuer controls remain usable with reduced motion',await page.locator('#mint').isVisible());
  await capture('issuer-mobile.png');
+ const proofState=process.argv[4];assert.ok(proofState,'Synthetic browser state is required');
+ const recordReturn=(id,amount)=>{
+  const script=`import sys
+from pathlib import Path
+from hellabit.ledger import Ledger
+from hellabit.operations import Operations
+from hellabit.fixtures import SandboxProvider
+book=Ledger(Path(sys.argv[1]));ops=Operations(book)
+provider=SandboxProvider(book.path.with_name(book.path.name+'.sandbox-provider.sqlite3'))
+row=ops.get(sys.argv[2],sys.argv[3])
+provider.return_payment(row['external_key'],sys.argv[4],int(sys.argv[5]))
+ops.reconcile(sys.argv[2],row['id'],provider)
+`;
+  const result=spawnSync(process.env.HELLABIT_TEST_PYTHON,['-c',script,proofState,data.workspace.id,firstRecovery.intent_id,id,String(amount)],{encoding:'utf8',timeout:10000,env:{PATH:process.env.PATH,PYTHONPATH:process.cwd(),PYTHONDONTWRITEBYTECODE:'1'}});
+  assert.equal(result.status,0,'Record authenticated synthetic return: '+result.stderr);
+ };
+ recordReturn('browser-partial-return',5);
+ await page.reload();await page.locator('#asset-tabs button').first().waitFor({state:'attached'});await nav('work');
+ let returnRow=page.locator(`[data-payout-row="${firstRecovery.id}"]`);
+ check('Partial return replaces the paid headline with current financial outcome',(await returnRow.textContent()).includes('Test payout partially returned')&&(await returnRow.textContent()).includes('Net paid 0.15 CAD')&&(await returnRow.textContent()).includes('Returned 0.05 CAD'));
+ check('Returned payout offers a receipt without a replacement settlement action',await returnRow.locator('summary').count()===1&&await returnRow.locator('[data-merchant-payout]').count()===0);
+ await page.setViewportSize({width:1440,height:1100});await returnRow.locator('summary').click();await capture('partial-return-desktop.png');
+ recordReturn('browser-full-return',15);
+ await page.reload();await page.locator('#asset-tabs button').first().waitFor({state:'attached'});await nav('work');
+ returnRow=page.locator(`[data-payout-row="${firstRecovery.id}"]`);
+ check('Full return shows zero net paid and retains original settled amount',(await returnRow.textContent()).includes('Test payout fully returned')&&(await returnRow.textContent()).includes('Net paid 0.00 CAD')&&(await returnRow.textContent()).includes('Originally settled 0.20 CAD'));
+ await page.setViewportSize({width:390,height:844});await returnRow.locator('summary').click();
+ check('Return receipt remains contained on a phone',await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth));
+ check('Return receipt exposes the exact account scope',(await returnRow.textContent()).includes('sandbox:bank:CAD'));
+ await capture('full-return-mobile.png');
  check('No external network requests',external.length===0);check('No browser runtime or console errors',errors.length===0);
  fs.writeFileSync(path.join(output,'browser-proof.json'),JSON.stringify({schema:'hellabit.browser-proof.v1',ok:true,checks,errors,external,physicalIPhoneTested:false,keyboardTest:'contracted-viewport-simulation',safeAreaTest:'24px-top-34px-bottom-simulation',liveTransactions:0},null,2)+'\n',{mode:0o600});
  console.log(JSON.stringify({ok:true,checks:checks.length,screenshots:['desktop.png','mobile.png','issuer-mobile.png'],liveTransactions:0}));

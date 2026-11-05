@@ -53,7 +53,7 @@ class ApiProcessTests(unittest.TestCase):
                 path=root/name;path.write_bytes(data);path.chmod(0o600)
             book=Ledger(root/"ledger.sqlite3");tenant=book.create_tenant("TLS Merchant")["tenant"]
             public=(root/"issuer.pem").read_bytes()
-            Identity(book,issuer="https://issuer.example.invalid",audience="hellabit-api",public_keys={"key-1":public}).enroll(
+            grant=Identity(book,issuer="https://issuer.example.invalid",audience="hellabit-api",public_keys={"key-1":public}).enroll(
                 tenant,"merchant","merchant",int(time.time())+3600)
             code="""
 import asyncio,json,socket,sys,uvicorn
@@ -93,7 +93,7 @@ asyncio.run(server.serve(sockets=[sock]))
                 with self.assertRaises(ssl.SSLCertVerificationError):
                     call("GET","/api/health",ctx=ssl.create_default_context())
                 epoch=int(time.time())
-                token=jwt.encode({"iss":"https://issuer.example.invalid","aud":"hellabit-api",
+                token=jwt.encode({"hellabit_grant":grant["token_claims"]["hellabit_grant"],"iss":"https://issuer.example.invalid","aud":"hellabit-api",
                     "sub":"merchant","iat":epoch-1,"exp":epoch+300},signer,algorithm="RS256",
                     headers={"kid":"key-1","typ":"at+jwt"})
                 headers={"Authorization":"Bearer "+token}

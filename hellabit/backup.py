@@ -10,6 +10,7 @@ import sqlite3
 import struct
 import tempfile
 import time
+from contextlib import closing
 from .ledger import Error,canonical
 
 LIMIT=1024*1024*1024
@@ -137,7 +138,7 @@ def restore(source,destination,key):
         with path.open("rb") as f:
             if f.read(16)!=b"SQLite format 3\x00":raise Error("backup_database_invalid",400)
         try:
-            with sqlite3.connect(path.as_uri()+"?mode=ro&immutable=1",uri=True) as db:
+            with closing(sqlite3.connect(path.as_uri()+"?mode=ro&immutable=1",uri=True)) as db:
                 if db.execute("PRAGMA integrity_check").fetchone()[0]!="ok":
                     raise Error("backup_database_invalid",400)
                 required={"tenants","journals","postings","operations","quotes","settings"}

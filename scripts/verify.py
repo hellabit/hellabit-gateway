@@ -192,6 +192,7 @@ def main():
         if not args.skip_browser:
             print(json.dumps({"stage": "desktop-mobile-journeys"}), flush=True)
             browser_env = dict(env)
+            browser_env['HELLABIT_TEST_PYTHON']=api_python
             if config.get("playwright"):
                 record = config["playwright"]; library = Path(record["path"])
                 if sha((library / "package.json").read_bytes()) != record["package_sha256"]: raise RuntimeError("Browser library binding changed")
@@ -202,7 +203,7 @@ def main():
                     selector = selectors.DefaultSelector(); selector.register(child.stdout, selectors.EVENT_READ)
                     if not selector.select(10): raise RuntimeError("Browser proof server did not start")
                     startup = json.loads(child.stdout.readline()); selector.close()
-                    run("browser", [node, "scripts/browser-proof.mjs", startup["url"], str(EVIDENCE / "browser")], browser_env, 150)
+                    run("browser", [node, "scripts/browser-proof.mjs", startup["url"], str(EVIDENCE / "browser"),str(Path(tmp)/'ledger.sqlite3')], browser_env, 150)
                 finally:
                     child.terminate()
                     try: child.wait(timeout=5)

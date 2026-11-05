@@ -65,6 +65,10 @@ def main():
     index.add_argument("--config",type=Path,required=True);index.add_argument("--max-blocks",type=int,default=20)
     backup=commands.add_parser("backup");backup.add_argument("action",choices=["keygen","create","restore"])
     backup.add_argument("--key-file",type=Path);backup.add_argument("--input",type=Path);backup.add_argument("--output",type=Path,required=True)
+    recover=commands.add_parser('recover-handover')
+    recover.add_argument('--authoritative-state',type=Path,required=True)
+    recover.add_argument('--provider-state',type=Path,required=True)
+    recover.add_argument('--output',type=Path,required=True)
     args=parser.parse_args()
     try:
         if args.command=="backup" and args.action=="keygen":
@@ -75,7 +79,12 @@ def main():
             result=restore(args.input,args.output,owner_file(args.key_file,32))
         else:
             book=Ledger(args.state)
-            if args.command=="backup":
+            if args.command=='recover-handover':
+                from hellabit.recovery import handover
+                if not args.authoritative_state.is_file() or not args.provider_state.is_file():
+                    raise Error('intact_authoritative_history_required',423)
+                result=handover(book,Ledger(args.authoritative_state),SandboxProvider(args.provider_state),args.output)
+            elif args.command=="backup":
                 from hellabit.backup import create
                 if args.key_file is None:raise Error("backup_key_required",400)
                 result=create(book,args.output,owner_file(args.key_file,32))
@@ -147,17 +156,7 @@ def main():
                         row=ops.cancel_unknown(tenant,args.intent,provider);result={"intent":row["id"],"state":row["state"]}
                     elif args.command=="reconcile":row=ops.reconcile(tenant,args.intent,provider);result={"intent":row["id"],"state":row["state"]}
                     else:
-                        with book.db() as db:
-                            unknown=db.execute("""SELECT id FROM execution_intents WHERE tenant=? AND
-                                (state='unknown' OR (state='submitting' AND lease_until<=?)) ORDER BY created LIMIT 1""",
-                                (tenant,book.clock())).fetchone()
-                        if unknown:
-                            row=ops.reconcile(tenant,unknown["id"],provider)
-                            result={"reconciled_original":row["id"],"state":row["state"],"new_submission":False}
-                        else:
-                            reply=ops.process_one(tenant,provider,intent=args.intent)
-                            result={"processed":reply["processed"]}
-                            if reply["processed"]:result.update({"intent":reply["intent"]["id"],"state":reply["intent"]["state"]})
+                        result=ops.tick(tenant,provider,intent=args.intent)
                 elif args.command=="usage":
                     from hellabit.metering import UsageMeter
                     meter=UsageMeter(book)

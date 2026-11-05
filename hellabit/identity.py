@@ -46,18 +46,11 @@ class Identity:
             self.keys[kid]=key
         self.book,self.issuer,self.audience,self.jwt=book,issuer,audience,jwt
         ensure_schema(book,"identity",SCHEMA)
-        if not getattr(book,"_identity_grant_migrated",False):
-            with book.transaction() as db:
-                if "valid_after" not in {r[1] for r in db.execute("PRAGMA table_info(api_principals)")}:
-                    db.execute("ALTER TABLE api_principals ADD COLUMN valid_after INTEGER NOT NULL DEFAULT 0")
-                for row in db.execute("SELECT * FROM api_principals WHERE id NOT IN (SELECT principal FROM api_grants)").fetchall():
-                    self._history(db,row,"imported")
-            book._identity_grant_migrated=True
 
     def _history(self,db,row,action):
         from .ledger import canonical
         version=db.execute("SELECT COALESCE(MAX(version),0)+1 FROM api_grants WHERE principal=?",(row["id"],)).fetchone()[0]
-        terms={k:row[k] for k in ("role","customer","expires","rate_limit","revoked","valid_after")}
+        terms={k:row[k] for k in ("role","customer","expires","rate_limit","revoked","valid_after","grant_id")}
         db.execute("INSERT INTO api_grants VALUES(?,?,?,?,?)",(row["id"],version,action,canonical(terms),self.book.clock()))
         audit(self.book,db,row["tenant"],"api-grant-"+action,row["id"],{"version":version,**terms})
         return version
@@ -81,13 +74,14 @@ class Identity:
                         "expires":expires,"rate_limit":rate_limit}.items()) or old["revoked"]:
                     raise Error("principal_binding_immutable",409)
                 version=db.execute("SELECT MAX(version) FROM api_grants WHERE principal=?",(old["id"],)).fetchone()[0]
-                return {"id":old["id"],"version":version,"replayed":True}
+                return {"id":old["id"],"version":version,"token_claims":{"hellabit_grant":old["grant_id"]},"replayed":True}
             id_="principal_"+secrets.token_hex(12)
-            db.execute("INSERT INTO api_principals(id,tenant,issuer,subject_hash,role,customer,expires,revoked,rate_limit) VALUES(?,?,?,?,?,?,?,0,?)",
-                       (id_,tenant,self.issuer,hashed,role,customer,expires,rate_limit))
+            grant_id="grant_"+secrets.token_hex(24)
+            db.execute("INSERT INTO api_principals(id,tenant,issuer,subject_hash,role,customer,expires,revoked,rate_limit,grant_id) VALUES(?,?,?,?,?,?,?,0,?,?)",
+                       (id_,tenant,self.issuer,hashed,role,customer,expires,rate_limit,grant_id))
             row=db.execute("SELECT * FROM api_principals WHERE id=?",(id_,)).fetchone()
             version=self._history(db,row,"enrolled")
-        return {"id":id_,"version":version,"role":role,"expires":expires}
+        return {"id":id_,"version":version,"role":role,"expires":expires,"token_claims":{"hellabit_grant":grant_id}}
 
     def change_grant(self,tenant,id_,action,expected_version,*,expires,role=None,customer=None,rate_limit=None):
         identifier(id_)
@@ -110,12 +104,12 @@ class Identity:
                 raise Error("invalid_grant_terms",400)
             if role=="agent":self.book.customer(db,tenant,customer)
             elif customer is not None:raise Error("unexpected_customer_binding",400)
-            valid_after=self.book.clock()+1
-            db.execute("UPDATE api_principals SET role=?,customer=?,rate_limit=?,expires=?,revoked=0,valid_after=? WHERE id=?",
-                       (role,customer,rate_limit,expires,valid_after,id_))
+            grant_id="grant_"+secrets.token_hex(24)
+            db.execute("UPDATE api_principals SET role=?,customer=?,rate_limit=?,expires=?,revoked=0,valid_after=?,grant_id=? WHERE id=?",
+                       (role,customer,rate_limit,expires,self.book.clock(),grant_id,id_))
             row=db.execute("SELECT * FROM api_principals WHERE id=?",(id_,)).fetchone()
             version=self._history(db,row,action)
-        return {"id":id_,"version":version,"expires":expires,"tokens_issued_at_or_after":valid_after}
+        return {"id":id_,"version":version,"expires":expires,"token_claims":{"hellabit_grant":grant_id}}
 
     def revoke(self, tenant, id_):
         identifier(id_)
@@ -154,11 +148,14 @@ class Identity:
         if header.get("typ")!="at+jwt" and claims.get("token_use")!="access":
             raise Error("access_token_required",401)
         with self.book.transaction() as db:
+            if db.execute("SELECT 1 FROM settings WHERE key IN ('recovery_quarantine','recovery_retired')").fetchone():
+                raise Error("restored_database_quarantined",423)
             row=db.execute("SELECT * FROM api_principals WHERE issuer=? AND subject_hash=?",
                            (self.issuer,digest(claims["sub"]))).fetchone()
             if not row or row["revoked"] or row["expires"]<=self.book.clock():
                 raise Error("principal_not_enrolled",403)
-            if claims["iat"]<row["valid_after"]:raise Error("fresh_token_after_grant_change_required",403)
+            if claims.get("hellabit_grant")!=row["grant_id"]:
+                raise Error("grant_generation_mismatch",403)
             amr=claims.get("amr",[])
             if row["role"]=="operator" and (not isinstance(amr,list) or "mfa" not in amr):
                 raise Error("operator_mfa_required",403)
@@ -172,4 +169,25 @@ class Identity:
                 ON CONFLICT(principal,window) DO UPDATE SET requests=requests+1""",(row["id"],window))
             db.execute("DELETE FROM api_rate_windows WHERE rowid IN(SELECT rowid FROM api_rate_windows WHERE window<? LIMIT 100)",(window-5,))
             return {"id":row["id"],"tenant":row["tenant"],"role":row["role"],"customer":row["customer"],
+                    "grant_id":row["grant_id"],"token_expires":claims["exp"],
+                    "operator_auth_time":claims.get("auth_time"),
                     "identity_source":"pinned-issuer","mfa_asserted":isinstance(amr,list) and "mfa" in amr}
+
+    def _validate_current(self,db,principal):
+        if db.execute("SELECT 1 FROM settings WHERE key IN ('recovery_quarantine','recovery_retired')").fetchone():
+            raise Error("restored_database_quarantined",423)
+        row=db.execute("SELECT * FROM api_principals WHERE id=? AND tenant=? AND issuer=?",
+                       (principal['id'],principal['tenant'],self.issuer)).fetchone()
+        if (not row or row['revoked'] or row['expires']<=self.book.clock() or
+                any(row[k]!=principal[k] for k in ('grant_id','role','customer'))):
+            raise Error("authorization_changed",403)
+        if principal['token_expires']<=self.book.clock():raise Error("access_token_expired",401)
+        if row['role']=='operator' and (not principal['mfa_asserted'] or
+                not self.book.clock()-900<=principal['operator_auth_time']<=self.book.clock()+15):
+            raise Error("fresh_operator_authentication_required",403)
+
+    def dispatch(self,principal,route,*args):
+        """Reads are admitted here; every write rechecks under its commit lock."""
+        guard=lambda db:self._validate_current(db,principal)
+        with self.book.db() as db:guard(db)
+        with self.book.request_authority(guard):return route(principal,*args)

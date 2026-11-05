@@ -100,3 +100,19 @@ quarantine. Neither establishes provider readiness. Unexpected errors include a
 Subject grant renewals, permission replacement and deliberate reinstatement are
 local operator actions with expected-version checks. They are never authorized
 by token-supplied admin claims. See [identity operation](OPERATIONS.md).
+
+## Current payment outcomes and grant generations
+
+Payout and execution-intent projections expose `original_settled_units`,
+`returned_units`, `net_paid_units`, `effective_outcome` and `latest_adjustment`.
+`effective_outcome` becomes `partially-returned` or `fully-returned`; the original
+settlement state remains immutable history. A return carries its canonical
+`event_key` and exact `connection`. The console uses the current outcome for its
+headline.
+
+Signed access tokens must include the current opaque `hellabit_grant` returned
+by local enrollment or renewal. The issuer signs that generation reference; local
+grants still determine workspace, role and customer authority. Renewing, replacing
+or reinstating a grant rotates the reference. Old tokens cannot gain the new
+authority through issuance-time leeway. Legacy tokens need fresh issuance after
+a storage upgrade.

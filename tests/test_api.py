@@ -5,21 +5,71 @@ from pathlib import Path
 import tempfile
 import time
 import unittest
+import threading
 from unittest.mock import patch
 import jwt
 from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric import rsa
 from hellabit.api import Api
 from hellabit.identity import Identity
-from hellabit.ledger import Ledger,Error
+from hellabit.ledger import Ledger,Error,digest
 from hellabit.rails import SandboxBank
 
 ISSUER,AUDIENCE="https://identity.example.invalid","hellabit-api"
 
 class ApiTests(unittest.IsolatedAsyncioTestCase):
+    async def test_revocation_after_route_admission_is_rechecked_inside_financial_transaction(self):
+        base='/api/v1/workspaces/'+self.tenant
+        SandboxBank(self.book).fund(self.tenant,'agent-01','CAD',100,'commit-guard-funding')
+        quote=self.book.create_quote(self.tenant,'CAD',100,1)['quote']
+        grant=self.identity.enroll(self.tenant,'commit-merchant','merchant',int(time.time())+3600)
+        original=self.app.route
+        def revoke_then_route(*arguments):
+            thread=threading.Thread(target=lambda:self.identity.revoke(self.tenant,grant['id']))
+            thread.start();thread.join(timeout=5)
+            self.assertFalse(thread.is_alive())
+            return original(*arguments)
+        with patch.object(self.app,'route',side_effect=revoke_then_route):
+            status,_=await self.request('POST',base+'/operations',{'customer':'agent-01','quote':quote,'key':'commit-guard'},token=self.token('commit-merchant'))
+        self.assertEqual(status,403)
+        with self.book.db() as db:self.assertEqual(db.execute('SELECT COUNT(*) FROM operations').fetchone()[0],0)
+
+    async def test_accepted_clock_skew_never_transfers_old_read_authority_to_new_role(self):
+        now=int(time.time());base='/api/v1/workspaces/'+self.tenant
+        grant=self.identity.enroll(self.tenant,'skewed-reader','read-only',now+3600)
+        old_tokens=[self.token('skewed-reader',iat=now+offset) for offset in (-14,0,10,14)]
+        for token in old_tokens:self.assertEqual((await self.request('GET',base,token=token))[0],200)
+        revoked=self.identity.revoke(self.tenant,grant['id'])
+        self.identity.change_grant(self.tenant,grant['id'],'reinstate',revoked['version'],expires=now+3600,role='merchant')
+        for token in old_tokens:
+            status,result=await self.request('POST',base+'/quotes',{'asset':'CAD','amount':100,'fee':1},token=token)
+            self.assertEqual((status,result['error']),(403,'grant_generation_mismatch'))
+        self.assertEqual((await self.request('POST',base+'/quotes',{'asset':'CAD','amount':100,'fee':1},token=self.token('skewed-reader')))[0],200)
+
+    async def test_revocation_during_body_upload_prevents_a_new_financial_reservation(self):
+        base='/api/v1/workspaces/'+self.tenant
+        SandboxBank(self.book).fund(self.tenant,'agent-01','CAD',100,'fund-before-upload')
+        quote=self.book.create_quote(self.tenant,'CAD',100,1)['quote']
+        grant=self.identity.enroll(self.tenant,'uploading-merchant','merchant',int(time.time())+3600)
+        data=json.dumps({'customer':'agent-01','quote':quote,'key':'revoked-during-upload'}).encode()
+        scope={'type':'http','method':'POST','path':base+'/operations','query_string':b'',
+               'headers':[(b'host',b'api.example.invalid'),(b'authorization',('Bearer '+self.token('uploading-merchant')).encode()),
+                          (b'content-type',b'application/json'),(b'content-length',str(len(data)).encode())]}
+        async def receive():
+            self.identity.revoke(self.tenant,grant['id'])
+            return {'type':'http.request','body':data,'more_body':False}
+        sent=[]
+        async def send(message):sent.append(message)
+        await self.app(scope,receive,send)
+        self.assertEqual(sent[0]['status'],403)
+        with self.book.db() as db:
+            self.assertEqual(db.execute('SELECT COUNT(*) FROM operations').fetchone()[0],0)
+            self.assertEqual(self.book._balance(db,self.tenant,'CAD','customer:agent-01'),100)
+
     async def test_grants_renew_after_expiry_and_reinstatement_requires_a_fresh_token(self):
         now=int(time.time())
         grant=self.identity.enroll(self.tenant,"long-lived-customer","merchant",now+10)
+        old_token=self.token("long-lived-customer",iat=now+10)
         self.book.clock=lambda:now+32*86400
         renewed=self.identity.change_grant(self.tenant,grant["id"],"renew",grant["version"],expires=now+33*86400)
         self.assertEqual(renewed["version"],2)
@@ -31,8 +81,8 @@ class ApiTests(unittest.IsolatedAsyncioTestCase):
             self.identity.change_grant(self.tenant,grant["id"],"renew",revoked["version"],expires=now+100)
         restored=self.identity.change_grant(self.tenant,grant["id"],"reinstate",revoked["version"],expires=now+100)
         base="/api/v1/workspaces/"+self.tenant
-        self.assertEqual((await self.request("GET",base,token=self.token("long-lived-customer")))[0],403)
-        self.assertEqual((await self.request("GET",base,token=self.token("long-lived-customer",iat=restored["tokens_issued_at_or_after"])))[0],200)
+        self.assertEqual((await self.request("GET",base,token=old_token))[0],403)
+        self.assertEqual((await self.request("GET",base,token=self.token("long-lived-customer")))[0],200)
 
     async def test_internal_errors_have_a_safe_correlated_record(self):
         secret="synthetic-sensitive-message-never-log"
@@ -46,7 +96,7 @@ class ApiTests(unittest.IsolatedAsyncioTestCase):
         route="/api/v1/workspaces/"+self.tenant+"/ready"
         self.assertEqual((await self.request("GET",route))[0],200)
         with self.book.db() as db:db.execute("INSERT INTO settings VALUES('recovery_quarantine','test')")
-        self.assertEqual((await self.request("GET",route))[0],503)
+        self.assertEqual((await self.request("GET",route))[0],423)
         self.assertEqual((await self.request("GET","/api/health",token=False))[1]["check"],"liveness")
 
     async def test_slow_chunked_body_has_one_total_deadline(self):
@@ -102,7 +152,9 @@ class ApiTests(unittest.IsolatedAsyncioTestCase):
 
     def token(self,subject="merchant-subject",**claims):
         now=int(time.time())
-        payload={"iss":ISSUER,"aud":AUDIENCE,"sub":subject,"iat":now-1,"exp":now+300,"auth_time":now,**claims}
+        with self.book.db() as db:
+            row=db.execute("SELECT grant_id FROM api_principals WHERE issuer=? AND subject_hash=?",(ISSUER,digest(subject))).fetchone()
+        payload={"hellabit_grant":row[0] if row else "unbound","iss":ISSUER,"aud":AUDIENCE,"sub":subject,"iat":now-1,"exp":now+300,"auth_time":now,**claims}
         return jwt.encode(payload,self.signer,algorithm="RS256",headers={"kid":"key-1","typ":"at+jwt"})
 
     async def request(self,method,path,body=None,token=None,extra=None,raw=None):

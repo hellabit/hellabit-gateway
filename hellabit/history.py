@@ -10,7 +10,7 @@ TABLES=("customers","assets","journals","quotes","operations","settlements","iss
         "reserve_proofs","rail_events","redemptions","issuer_requests","deliveries","payouts",
         "execution_observations","payment_adjustments","control_audit","api_grants",
         "readiness_evidence","provider_bindings","provider_inbox","enrollments",
-        "billing_plans","usage_events","usage_invoices","usage_totals")
+        "billing_plans","usage_events","usage_invoices","usage_totals","reserve_observations")
 
 def export_history(book,tenant,destination):
     destination=Path(destination).absolute()
