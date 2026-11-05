@@ -99,6 +99,9 @@ def _preflight(restored,source,provider):
         if _setting(current,'recovery_quarantine') or _setting(current,'recovery_retired'):
             raise Error('current_authoritative_primary_required',423)
         provider.validate_binding(provider.read_binding(current),ledger=source.path)
+        if current.execute("""SELECT 1 FROM execution_intents
+            WHERE state='unknown' AND last_error='provider_reference_conflict' LIMIT 1""").fetchone():
+            raise Error('recovery_reference_review_required_before_handover',423)
         for table in ('journals','control_audit'):
             for row in old.execute('SELECT seq,digest FROM '+table):
                 match=current.execute('SELECT digest FROM '+table+' WHERE seq=?',(row['seq'],)).fetchone()
@@ -114,6 +117,69 @@ def _hash(path):
     with Path(path).open('rb') as f:
         while block:=f.read(1024*1024):h.update(block)
     return h.hexdigest()
+
+
+def _candidate_path(destination, job):
+    return destination.parent/('.hellabit-'+job['id']+'.sqlite3')
+
+
+def _review_candidate_binding(candidate, db, job, binding):
+    """Check the retained stage without changing its binding to the destination."""
+    destination=Path(job['destination'])
+    if (candidate.path!=_candidate_path(destination,job) or _setting(db,STAGE)!=job['id'] or
+            any(_setting(db,key) for key in (PENDING,ACTIVE,'recovery_quarantine','recovery_retired')) or
+            binding!={'identity':job['provider'],'path':job['provider_path'],
+                      'generation':job['generation'],'ledger':job['destination']}):
+        raise Error('recovery_candidate_identity_mismatch',423)
+    return destination
+
+
+def handover_reference_case(restored, source, provider, destination, tenant, intent, *,
+                            expected_case_sha256=None, reviewer=None):
+    """Adjudicate an existing fenced stage with an intact retired source."""
+    from .fixtures import SandboxProvider
+    from .operations import Operations
+    from .ledger import identifier
+    if type(provider) is not SandboxProvider or source.path==restored.path:
+        raise Error('recovery_profile_not_enrolled',423)
+    destination=Path(destination).absolute()
+    destination=destination.parent.resolve()/destination.name
+    with ExitStack() as locks:
+        for book in sorted((source,restored),key=lambda b:str(b.path)):
+            locks.enter_context(book.writer_lock(exclusive=True))
+        if destination.exists() or destination.is_symlink():
+            raise Error('recovery_candidate_not_available_for_review',423)
+        with source.db() as current, restored.db() as snapshot:
+            job=json.loads(_setting(current,JOB) or '{}')
+            if not job:
+                raise Error('recovery_candidate_not_available_for_review',423)
+            identifier(job['id'])
+            expected={'source':str(source.path),'restored':str(restored.path),'destination':str(destination),
+                      'provider':provider.identity,'provider_path':str(provider.path),'generation':provider.generation}
+            if (any(job.get(key)!=value for key,value in expected.items()) or
+                    job.get('phase')!='provider-fenced' or 'candidate_sha256' in job or
+                    _setting(current,'recovery_retired')!=job['id'] or
+                    not _setting(snapshot,'recovery_quarantine')):
+                raise Error('resume_exact_existing_handover',423)
+        with provider.db() as external:
+            external.execute('BEGIN')
+            provider._writer(external)
+            fence=external.execute('SELECT previous_generation,generation FROM recovery_fences WHERE job=?',
+                                   (job['id'],)).fetchone()
+            if not fence or tuple(fence)!=(job['previous_generation'],job['generation']):
+                raise Error('handover_provider_fence_changed',423)
+        path=_candidate_path(destination,job)
+        if path.is_symlink() or not path.is_file():
+            raise Error('recovery_candidate_not_available_for_review',423)
+        candidate=Ledger(path,clock=source.clock,_recovery_candidate=True)
+        _verify(candidate)
+        ops=Operations(candidate)
+        if expected_case_sha256 is None:
+            return ops.inspect_reference_conflict(tenant,intent,_handover=job)
+        row=ops.resolve_reference_conflict(tenant,intent,expected_case_sha256,reviewer,_handover=job)
+        return {"handover_id":job['id'],"intent":row['id'],"state":row['state'],
+                "returned_units":row['returned_units'],"net_paid_units":row['net_paid_units'],
+                "replayed":row.get('replayed',False),"resume_required":True,"live_payments_enabled":False}
 
 
 def _standalone(book):
@@ -289,7 +355,7 @@ def handover(restored,source,provider,destination,*,sealed_archive=None,key=None
                     external.execute('BEGIN');watermarks=_watermarks(external)
                 job.update(generation=generation,watermarks=watermarks,phase='provider-fenced')
                 _checkpoint(source,job)
-            path=destination.parent/('.hellabit-'+job['id']+'.sqlite3')
+            path=_candidate_path(destination,job)
             try:
                 if 'candidate_sha256' not in job:
                     candidate=_stage(source,path,job,provider)

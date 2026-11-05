@@ -9,8 +9,8 @@ original-identity recovery and exact usage accounting. Export a payout
 reconciliation CSV with held, settled, returned and net paid amounts in their
 native units. [Payout report command](docs/OPERATIONS.md#export-the-complete-financial-record)
 
-Version **0.9.2 is a developer preview**. The console moves synthetic value;
-real-money submission remains blocked. Canada and the United States are intended
+Version **0.9.3 is a developer preview**. The console moves synthetic value.
+Real-money submission remains blocked. Canada and the United States are intended
 markets. No bank, public-chain signer, legal issuer or customer is enrolled.
 
 ## Check a payout without opening an account
@@ -154,10 +154,10 @@ Python environment builds checksum-pinned SQLite 3.54.1 from official source.
 
 The verifier stays free. Start with [one test payout and a decision
 checklist](docs/PAYOUT-VERIFICATION.md#decide-whether-the-integration-is-worth-changing).
-The output identifies which outcome passed, which evidence is missing, and
-whether a targeted fix to the existing integration is enough. The resulting
-test and evidence belong with your application. For help setting up the check,
-share a synthetic reproduction.
+The report shows observed outcomes, missing evidence and recovery time. Use
+the checklist to decide what needs repair and what needs a broader test. The
+resulting test and evidence belong with your application. For help setting up
+the check, share a synthetic reproduction.
 [Discuss payout verification](mailto:a@epv.ai?subject=Hellabit%20payout%20verification)
 
 Managed gateway deployment is a separate engagement with its own operating

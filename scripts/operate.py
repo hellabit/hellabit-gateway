@@ -54,6 +54,10 @@ def main():
     resolve=commands.add_parser("resolve-reference-conflict")
     resolve.add_argument("--intent",required=True);resolve.add_argument("--reviewer",required=True)
     resolve.add_argument("--expected-case-sha256",required=True)
+    for command in (review,resolve):
+        command.add_argument("--handover-source",type=Path)
+        command.add_argument("--provider-state",type=Path)
+        command.add_argument("--destination",type=Path)
     packet=commands.add_parser("packet");packet.add_argument("--output",type=Path,required=True)
     evidence=commands.add_parser("record-evidence")
     for name in ("control","reference","document-hash"):evidence.add_argument("--"+name,required=True)
@@ -130,15 +134,25 @@ def main():
                 elif args.command=="payout-report":
                     from hellabit.history import export_payout_report
                     result=export_payout_report(book,tenant,args.output)
-                elif args.command=="reference-case":
-                    case=Operations(book).inspect_reference_conflict(tenant,args.intent)
-                    _write_new(args.output,canonical(case).encode())
-                    result={key:case[key] for key in ("case_sha256","resolution_available")}
-                elif args.command=="resolve-reference-conflict":
-                    row=Operations(book).resolve_reference_conflict(
-                        tenant,args.intent,args.expected_case_sha256,args.reviewer,
-                    )
-                    result={"intent":row["id"],"state":row["state"],"replayed":row.get("replayed",False)}
+                elif args.command in ("reference-case","resolve-reference-conflict"):
+                    staged=(args.handover_source,args.provider_state,args.destination)
+                    inspect=args.command=="reference-case"
+                    options={} if inspect else {"expected_case_sha256":args.expected_case_sha256,"reviewer":args.reviewer}
+                    if any(staged):
+                        from hellabit.recovery import handover_reference_case
+                        if not all(staged) or not args.handover_source.is_file() or not args.provider_state.is_file():
+                            raise Error("exact_handover_paths_required",400)
+                        result=handover_reference_case(book,Ledger(args.handover_source),
+                            SandboxProvider(args.provider_state,require_existing=True),args.destination,tenant,args.intent,**options)
+                    elif inspect:
+                        result=Operations(book).inspect_reference_conflict(tenant,args.intent)
+                    else:
+                        row=Operations(book).resolve_reference_conflict(tenant,args.intent,**options)
+                        result={"intent":row["id"],"state":row["state"],"returned_units":row["returned_units"],
+                                "net_paid_units":row["net_paid_units"],"replayed":row.get("replayed",False)}
+                    if inspect:
+                        _write_new(args.output,canonical(result).encode())
+                        result={key:result[key] for key in ("case_sha256","resolution_available","handover_id")}
                 elif args.command=="packet":
                     packet=Readiness(book).packet(tenant);_write_new(args.output,canonical(packet).encode())
                     result={"packet_written":True,"identity_details_included":False,"legal_determination_included":False}
@@ -243,7 +257,10 @@ def main():
     except ImportError:
         print(canonical({"ok":False,"error":"optional_api_tools_not_configured","live_payments_enabled":False}));return 1
     except Error as error:
-        print(canonical({"ok":False,"error":error.code,"live_payments_enabled":False}));return 1
+        result={"ok":False,"error":error.code,"live_payments_enabled":False}
+        if error.code=="recovery_reference_review_required_before_handover":
+            result["next_action"]="Review the payout reference conflict on the authoritative ledger before rerunning handover."
+        print(canonical(result));return 1
     except (ValueError,KeyError,OSError):
         print(canonical({"ok":False,"error":"operator_configuration_or_file_invalid","live_payments_enabled":False}));return 1
 

@@ -2,6 +2,6 @@
   "externalTransactions": 0,
   "productionReady": false,
   "schema": "hellabit.build-proof.v2",
-  "sourceTreeSha256": "d19545c1f1cbee77de23dd44cae46fdde1a3811a1258fee1ae6a13c7b58ff17a",
-  "version": "0.9.2"
+  "sourceTreeSha256": "75ca56380d886545738f8ec61d316acf69bb8fa5efe68f7fe73cef76a8bc479f",
+  "version": "0.9.3"
 }

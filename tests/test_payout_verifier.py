@@ -7,6 +7,7 @@ import tempfile
 import unittest
 
 from scripts.verify_payout import verify
+from hellabit.readiness import _source_identity
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -85,6 +86,7 @@ class PayoutVerifierTests(unittest.TestCase):
             proc = subprocess.run(command, cwd=tmp, text=True, capture_output=True, check=True, timeout=5)
             report = json.loads(proc.stdout)
             self.assertEqual((report["verdict"],report["executed_local_sandbox"]),("pass",True))
+            self.assertEqual(report["revision"],"sha256:"+_source_identity())
             self.assertEqual(list(Path(tmp).iterdir()), [])
             bad = Path(tmp) / "malformed.json"
             bad.write_text('{"schema":1,"schema":2}')

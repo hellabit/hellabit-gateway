@@ -9,6 +9,11 @@ export interface PayoutIntent {
 export interface PayoutQueue {
   intents:PayoutIntent[]; counts:Record<string,number>; mode:'sandbox';
   attention:{connection:string;asset:string;held_count:number;held_units:number;oldest_created:number}[];
+  connection_impact:{
+    connection:string; asset:string; held_count:number; held_units:string; oldest_created:number;
+    holds:Partial<Record<'unknown'|'in_flight'|'queued'|'awaiting_settlement',
+      {count:number;units:string;oldest_created:number}>>;
+  }[];
   live_submission_implemented:false; observed_at:number;
 }
 export class HellabitError extends Error {code:string;status:number}

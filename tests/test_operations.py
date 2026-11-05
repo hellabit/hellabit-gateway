@@ -6,6 +6,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
+from unittest.mock import patch
 from hellabit.ledger import Ledger, Error
 from hellabit.operations import Operations
 from hellabit.payouts import Payouts
@@ -178,6 +179,32 @@ class OperationsTests(unittest.TestCase):
         with self.assertRaisesRegex(Error,"provider_reference_review_inconclusive"):
             self.ops.resolve_reference_conflict(self.tenant,job["id"],case["case_sha256"],"operator-1")
         self.assertEqual(self.balance("payout:"+payout["id"]),50)
+
+    def test_reference_review_posts_the_original_and_reviewed_return_atomically(self):
+        provider = SandboxProvider.for_ledger(self.book)
+        payout = self.payout("returned-conflict")
+        intent = payout["intent"]
+        job = self.ops.claim(self.tenant, intent=intent)
+        receipt = provider.submit(job)
+        self.ops.finish(self.tenant,intent,{**receipt,"status":"accepted"},lease=job["lease"],source="worker")
+        self.ops.finish(self.tenant,intent,{**receipt,"reference":"disputed"})
+        old_case = self.ops.inspect_reference_conflict(self.tenant,intent)
+        provider.return_payment(job["external_key"],"observed-return",20)
+        fresh = self.ops.inspect_reference_conflict(self.tenant,intent)
+        self.assertEqual(fresh["reviewed_outcome"],{"asset":"CAD","settled_units":50,"returned_units":20,"net_paid_units":30})
+        self.assertEqual(fresh["provider_corrections"][0]["event_id"],"observed-return")
+        with self.assertRaisesRegex(Error,"provider_reference_review_case_changed"):
+            self.ops.resolve_reference_conflict(self.tenant,intent,old_case["case_sha256"],"operator-1")
+        with patch.object(self.ops,"_apply_adjustment",side_effect=OSError("simulated write failure")):
+            with self.assertRaises(OSError):
+                self.ops.resolve_reference_conflict(self.tenant,intent,fresh["case_sha256"],"operator-1")
+        self.assertEqual(self.balance("payout:"+payout["id"]),50)
+        self.assertEqual(self.ops.get(self.tenant,intent)["state"],"unknown")
+        outcome = self.ops.resolve_reference_conflict(self.tenant,intent,fresh["case_sha256"],"operator-1")
+        self.assertEqual((outcome["state"],outcome["returned_units"],outcome["net_paid_units"]),("confirmed",20,30))
+        self.assertEqual(self.balance("payout:"+payout["id"]),0)
+        self.assertEqual(self.ops.reconcile(self.tenant,intent,provider)["net_paid_units"],30)
+        self.assertTrue(self.book.reconcile(self.tenant)["ok"])
 
     def test_process_dies_after_provider_acceptance_then_lookup_recovers_once(self):
         p = self.payout()

@@ -5,12 +5,12 @@ import secrets
 import tempfile
 import time
 
-from . import __version__
 from .fixtures import SandboxProvider
-from .ledger import Ledger
+from .ledger import Error,Ledger
 from .operations import Operations
 from .payouts import Payouts
 from .rails import SandboxBank
+from .readiness import _source_identity
 
 
 def _command(job):
@@ -19,6 +19,9 @@ def _command(job):
 
 
 def capture_sandbox():
+    source_hash = _source_identity()
+    if source_hash is None:
+        raise Error("sandbox_source_identity_unavailable", 423)
     started = time.time_ns() // 1_000_000
     origin = time.monotonic_ns()
     attempts = []
@@ -72,9 +75,11 @@ def capture_sandbox():
 
         receipt = provider.lookup(command["key"])
         adjustments = provider.adjustments(command["key"])
+        if _source_identity() != source_hash:
+            raise Error("sandbox_source_changed_during_capture", 423)
         return {
             "schema":"hellabit.payout-evidence.v2", "environment":"synthetic",
-            "revision":"hellabit-" + __version__, "command":command, "attempts":attempts,
+            "revision":"sha256:" + source_hash, "command":command, "attempts":attempts,
             "run":{"id":"sandbox-" + secrets.token_hex(12), "profile":"settled-after-lost-reply.v1",
                    "started_at_ms":started, "interrupted_at_ms":interrupted_at, "deadline_ms":10_000},
             "application":{"before":before, "after":after},

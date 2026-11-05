@@ -180,6 +180,7 @@ def main():
         if vulnerabilities.get("high", 0) or vulnerabilities.get("critical", 0): raise RuntimeError("High or critical dependency advisory blocks this source checkpoint")
         receipt["dependencyAdvisories"] = vulnerabilities
         receipt["dependencyLockSha256"] = sha((ROOT / "package-lock.json").read_bytes())
+        dependency_inventory()
         print(json.dumps({"stage": "core-and-api", "mode": "offline"}), flush=True)
         output = run("python-tests", [api_python, "-m", "unittest", "discover", "-s", "tests", "-p", "test_*.py", "-q"], env)
         receipt["pythonTests"] = int(re.search(r"Ran (\d+) tests?", output).group(1))
@@ -220,8 +221,10 @@ def main():
         baseline = json.loads(run("baseline", [sys.executable, "scripts/benchmark.py", "--operations", "500"], env, 90))
         receipt["localBaseline"] = baseline
         print(json.dumps({"stage": "portable-source-checkpoint"}), flush=True)
-        dependency_inventory(); files = source_files()
+        files = source_files()
         source_hash = sha(json.dumps({n: sha(b) for n, b in sorted(files.items())}, sort_keys=True).encode())
+        if probe["revision"] != "sha256:" + source_hash:
+            raise RuntimeError("Payout recovery did not exercise the packaged source")
         for name in ["AttestedStablecoin", "PaymentRouter"]:
             files["compiled/" + name + ".json"] = (ROOT / "artifacts" / (name + ".json")).read_bytes()
         files["VERIFIED.json"] = (json.dumps({"schema": "hellabit.build-proof.v2", "sourceTreeSha256": source_hash,
