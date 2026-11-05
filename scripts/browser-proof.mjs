@@ -111,7 +111,16 @@ try{
  check('Interrupted provider reply preserves the original payout and held proceeds',recoverySnapshot.payouts.find(p=>p.id===firstRecovery.id).state==='pending'&&recoverySnapshot.payouts.find(p=>p.id===firstRecovery.id).intent_state==='unknown');
  await nav('overview');
  const attention=await page.locator('#payout-attention').textContent();
- check('Overview shows held value, the affected connection and how long it has been open',attention.includes('0.20 CAD held')&&attention.includes('sandbox:bank:CAD')&&attention.includes('Oldest opened'));
+ check('Overview distinguishes the unknown hold from the queued hold and reports full impact',
+   attention.includes('0.40 CAD held')&&attention.includes('sandbox:bank:CAD')&&attention.includes('Oldest opened')&&
+   attention.includes('Outcome unknown · 1')&&attention.includes('Queued behind it · 1'));
+ await capture('paused-connection-desktop.png');
+ const desktop=page.viewportSize();await page.setViewportSize({width:390,height:844});
+ check('Phone overview keeps the full held amount and both reasons inside the viewport',
+   await page.locator('#payout-attention').evaluate(node=>
+     node.innerText.includes('0.40 CAD held')&&node.querySelectorAll('li').length===2&&
+     node.getBoundingClientRect().right<=window.innerWidth&&node.scrollWidth<=node.clientWidth+1));
+ await capture('paused-connection-mobile.png');await page.setViewportSize(desktop);
  await click('[data-pane="overview"] [data-focus-id="recovery-queue-title"]');
  check('Opening recovery focuses the relevant queue',await page.locator('#recovery-queue-title').evaluate(e=>e===document.activeElement));
  check('Unknown payment exposes lookup and pauses another payment on the same connection',await page.locator(`[data-intent="${firstRecovery.intent_id}"][data-intent-action="reconcile"]`).isVisible()&&await page.locator(`[data-intent="${secondRecovery.intent_id}"][data-intent-action="process"]`).isDisabled()&&await page.locator('#readiness-unknown').textContent()==='1');

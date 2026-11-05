@@ -542,6 +542,7 @@ Promise.all([workspaces(),loadPlan()]).catch(error=>failure(error.message));
 
 function renderReadiness(){
   const r=state.readiness;if(!r)return;
+  $('#gateway-version').textContent='GATEWAY / '+r.version;
   $('#readiness-build').textContent=({'locally-verified-current':'Verified for this source','packaged-source-matches-proof':'Matches packaged proof'})[r.source_build.status]||'Checks pending for this source';
   $('#readiness-ledger').textContent=r.machine_observations.ledger_balanced&&r.machine_observations.control_audit_valid?'Balanced · Audit intact':'Needs review';
   $('#readiness-unknown').textContent=String(r.machine_observations.unknown_or_overdue_submissions);
@@ -550,28 +551,48 @@ function renderReadiness(){
   const capacityLabel={'limit-exceeded':'Snapshot limit exceeded','capacity-warning':'Plan your next verified snapshot now','within-limit':'Within the snapshot limit'}[cap.status];
   $('#recovery-capacity').textContent=`Recovery storage: ${Math.ceil(cap.database_bytes/1048576)} MiB of ${cap.backup_limit_bytes/1048576} MiB. ${capacityLabel}.`+
     (cap.has_minimum_working_space?'':' The state volume has less than the minimum working space for a snapshot.');
-  $('#readiness-controls').innerHTML=r.external_controls.map(c=>`<li><strong>${esc(c.title)}</strong><span class="pill">${c.status==='reported-unverified'?'Recorded · Review unverified':c.status==='expired'?'Review expired':'External evidence needed'}</span><p>${esc(c.next_action)}</p></li>`).join('');
+  const controlLabels={'reported-unverified':'Recorded · Review unverified',expired:'Evidence expired',
+    revoked:'Evidence withdrawn',unscoped:'Not tied to a deployment','scope-changed':'Operating scope changed',
+    'scope-unavailable':'Current scope unavailable',missing:'External evidence needed'};
+  $('#readiness-controls').innerHTML=r.external_controls.map(c=>{
+    const date=c.evidence?.revoked_at??c.evidence?.expires_at;
+    const timing=date==null?'':`<p class="fine-print">${c.status==='revoked'?'Withdrawn':'Recorded expiry'} ${timestamp(date)}</p>`;
+    return `<li><strong>${esc(c.title)}</strong><span class="pill">${controlLabels[c.status]||controlLabels.missing}</span>${timing}<p>${esc(c.next_action)}</p></li>`;
+  }).join('');
   renderRecovery();
   updateControls();
 }
 function renderRecovery(){
   const queue=state.ops;
-  const groups=queue.attention;
+  const groups=queue.connection_impact;
+  const inProgress=new Set(queue.attention.map(group=>group.connection));
   const active=['prepared','submitting','unknown','awaiting_settlement'];
   const rows=queue.intents.filter(row=>active.includes(row.state));
   const total=active.reduce((count,key)=>count+(queue.counts[key]||0),0);
   const assetById=id=>state.data.assets.find(asset=>asset.id===id);
+  const heldMoney=(units,id)=>{
+    const asset=assetById(id);
+    if(!asset)return units+' units · '+id;
+    const base=10n**BigInt(asset.decimals), value=BigInt(units);
+    const whole=new Intl.NumberFormat('en').format(value/base);
+    return whole+'.'+String(value%base).padStart(asset.decimals,'0')+' '+label(asset);
+  };
+  const kinds={unknown:'Outcome unknown',in_flight:'Submission in progress',queued:'Queued behind it',
+    awaiting_settlement:'Accepted · Awaiting settlement'};
   $('#payout-attention').innerHTML=groups.length?groups.map(group=>{
-    const held=money(group.held_units,assetById(group.asset));
-    return `<div class="rail-row"><div class="rail-info"><strong>${esc(held)} held · ${group.held_count} payout${group.held_count===1?'':'s'}</strong><small>${esc(group.connection)} · Oldest opened ${timestamp(group.oldest_created)}</small></div><span class="pill">Review original outcomes</span></div>`;
-  }).join(''):'<p class="muted">No payouts with an unknown submission outcome.</p>';
+    const breakdown=Object.entries(kinds).filter(([kind])=>group.holds[kind]).map(([kind,title])=>{
+      const hold=group.holds[kind];
+      return `<li><span>${title} · ${hold.count}</span><strong>${esc(heldMoney(hold.units,group.asset))}</strong><small>Oldest opened ${timestamp(hold.oldest_created)}</small></li>`;
+    }).join('');
+    return `<section class="payout-impact" aria-label="${esc(group.connection)}"><div class="payout-impact-total"><strong>${esc(heldMoney(group.held_units,group.asset))} held · ${group.held_count} payout${group.held_count===1?'':'s'}</strong><small>${esc(group.connection)}</small></div><ul>${breakdown}</ul></section>`;
+  }).join(''):'<p class="muted">No connections are pausing new payout submissions.</p>';
   $('#queue-scope').textContent=`Showing ${rows.length} of ${total} active test payments. Unknown outcomes appear first.`;
   $('#execution-queue').innerHTML=rows.length?rows.map(row=>{
     const asset=assetById(row.asset), id=esc(row.id);
     const unknown=row.state==='unknown'||(row.state==='submitting'&&row.lease_until<=queue.observed_at);
     const accepted=row.state==='awaiting_settlement';
     const conflict=row.last_error==='provider_reference_conflict';
-    const blocked=groups.some(group=>group.connection===row.connection);
+    const blocked=inProgress.has(row.connection);
     const status=conflict?'Provider reference conflict · Hold preserved':unknown?'Outcome unknown · Hold preserved':accepted?'Accepted · Awaiting settlement':row.state==='submitting'?'Submission in progress':'Prepared · Hold reserved';
     let action='<p class="fine-print">The hold stays reserved while the worker owns this attempt.</p>';
     if(conflict){

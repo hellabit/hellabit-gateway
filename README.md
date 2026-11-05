@@ -9,7 +9,7 @@ original-identity recovery and exact usage accounting. Export a payout
 reconciliation CSV with held, settled, returned and net paid amounts in their
 native units. [Payout report command](docs/OPERATIONS.md#export-the-complete-financial-record)
 
-Version **0.9.1 is a developer preview**. The console moves synthetic value;
+Version **0.9.2 is a developer preview**. The console moves synthetic value;
 real-money submission remains blocked. Canada and the United States are intended
 markets. No bank, public-chain signer, legal issuer or customer is enrolled.
 
@@ -41,12 +41,14 @@ The core console uses only Python's standard library; it stays on `127.0.0.1`.
    computed result. Its charge and durable delivery commit together.
 2. Review and confirm a test payout, then open the recovery queue from **Overview**. Choose
    **Test an interrupted reply**. The test provider accepts it, but the reply
-   disappears. Overview shows the amount held and the affected connection.
+   disappears. Overview shows the full amount held on the affected connection,
+   with the unknown payout and the queue behind it listed separately.
 3. Open the queue again and choose **Check original payment**. Recovery finds
    that accepted payment and records one settlement. The original hold stays
    reserved while its outcome is unknown.
-4. **Settlement planning** also exports a responsibility packet. Saved documents
-   never establish legal approval or activate a financial connection.
+4. **Settlement planning** also exports a responsibility packet. It distinguishes
+   current, expired, withdrawn and out-of-scope records. Saved documents never
+   establish legal approval or activate a financial connection.
 5. **Issuer lab** keeps branded test issuance, reserve assertions and redemption
    claims separate. Payout, issuance and redemption drafts and receipts stay
    with the workspace across tabs and restarts. Test balances and tokens have
@@ -75,7 +77,7 @@ connection forms; use opaque references.
 | Optional ASGI API | Pinned RSA access-token signatures, local subject grants, operator MFA and recent-authentication assertions, revocation and rate limits | Your identity realm, keys, TLS certificate and deployment policy |
 | Encrypted recovery | AES-GCM snapshots, authenticated new-path restore, ledger check and recovery rehearsal | Production key custody, offsite retention and incident ownership |
 | Exact usage metering | Integer micro-units aggregate into native cents; residuals carry forward; closed invoices are immutable | Customer agreement, actual costs and an approved collection method |
-| Operating readiness | Current source comparison, ledger/audit checks, opaque evidence records and responsibility packet | Actual entity, functions, jurisdictions and program review |
+| Operating readiness | Source comparison, ledger/audit checks, deployment scope binding, expiry and withdrawal of evidence | Actual entity, functions, jurisdictions and independent program review |
 
 These components do not constitute a bank, an audited financial service or an
 approved stablecoin program. The event indexer makes no financial postings. A
@@ -150,11 +152,12 @@ Python environment builds checksum-pinned SQLite 3.54.1 from official source.
 
 ## Verification for an existing payout workflow
 
-The verifier stays free. For help setting up a regression check, identify one
-test payout flow, its provider profile and the failure you need to exercise.
-Agree on the capture, expected accounting outcome and deadline before work
-starts. The resulting evidence and CI check belong with your application.
-Share a synthetic reproduction when you enquire.
+The verifier stays free. Start with [one test payout and a decision
+checklist](docs/PAYOUT-VERIFICATION.md#decide-whether-the-integration-is-worth-changing).
+The output identifies which outcome passed, which evidence is missing, and
+whether a targeted fix to the existing integration is enough. The resulting
+test and evidence belong with your application. For help setting up the check,
+share a synthetic reproduction.
 [Discuss payout verification](mailto:a@epv.ai?subject=Hellabit%20payout%20verification)
 
 Managed gateway deployment is a separate engagement with its own operating

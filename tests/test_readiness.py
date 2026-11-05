@@ -19,8 +19,9 @@ class ReadinessTests(unittest.TestCase):
     def tearDown(self):self.tmp.cleanup()
 
     def test_all_reported_documents_cannot_clear_legal_or_payment_activation(self):
+        scope=self.ready.report(self.tenant)["evidence_scope"]["sha256"]
         for control,_,_ in REQUIREMENTS:
-            self.ready.record(self.tenant,control,"synthetic-document","a"*64,2000)
+            self.ready.record(self.tenant,control,"synthetic-document","a"*64,2000,scope)
         result=self.ready.report(self.tenant)
         self.assertTrue(all(c["status"]=="reported-unverified" for c in result["external_controls"]))
         self.assertFalse(result["legal_role_resolved"]);self.assertFalse(result["live_payments_enabled"])
@@ -32,6 +33,7 @@ class ReadinessTests(unittest.TestCase):
 
     def test_evidence_expiry_conflict_and_workspace_isolation(self):
         self.ready.record(self.tenant,"entity","report-1","a"*64,1100)
+        self.assertEqual(self.control()["status"],"unscoped")
         with self.assertRaisesRegex(Error,"readiness_evidence_conflict"):
             self.ready.record(self.tenant,"entity","report-1","b"*64,1100)
         other=self.book.create_tenant("Other synthetic merchant")["tenant"]
@@ -39,6 +41,56 @@ class ReadinessTests(unittest.TestCase):
         self.now=1101
         entity=next(c for c in self.ready.report(self.tenant)["external_controls"] if c["id"]=="entity")
         self.assertEqual(entity["status"],"expired")
+
+    def control(self,name="entity"):
+        return next(c for c in self.ready.report(self.tenant)["external_controls"] if c["id"]==name)
+
+    def test_newer_record_stays_authoritative_after_expiry_and_withdrawal(self):
+        scope=self.ready.report(self.tenant)["evidence_scope"]["sha256"]
+        self.ready.record(self.tenant,"entity","long-lived","a"*64,2000,scope)
+        self.ready.record(self.tenant,"entity","replacement","b"*64,1100,scope)
+        self.now=1100
+        self.assertEqual(self.control()["status"],"expired")
+        self.ready.revoke(self.tenant,"entity","replacement","conditions-changed")
+        self.assertEqual(self.control()["status"],"revoked")
+        self.assertEqual(self.control()["evidence"]["revoked_at"],1100)
+        self.assertTrue(self.ready.record(self.tenant,"entity","replacement","b"*64,1100,scope)["replayed"])
+        self.assertTrue(self.ready.revoke(self.tenant,"entity","replacement","conditions-changed")["replayed"])
+        with self.assertRaisesRegex(Error,"readiness_revocation_conflict"):
+            self.ready.revoke(self.tenant,"entity","replacement","incorrect")
+        self.assertEqual(self.control()["status"],"revoked")
+        self.assertTrue(self.ready.report(self.tenant)["machine_observations"]["control_audit_valid"])
+
+    def test_scope_follows_profile_and_drafts_without_reviving_old_evidence(self):
+        def scope():return self.ready.report(self.tenant)["evidence_scope"]["sha256"]
+        initial=scope()
+        declared=self.ready.set_profile(self.tenant,"a"*64,initial)["scope"]
+        self.assertTrue(declared["profile_declared"])
+        self.assertNotEqual(initial,declared["sha256"])
+        self.assertTrue(self.ready.set_profile(self.tenant,"a"*64,declared["sha256"])["replayed"])
+        with self.assertRaisesRegex(Error,"readiness_scope_changed"):
+            self.ready.set_profile(self.tenant,"b"*64,initial)
+        terms={"institution_reference":"test-bank","account_reference":"test-account","currency":"CAD"}
+        self.book.prepare_enrollment(self.tenant,"bank",terms)
+        reviewed=scope()
+        self.ready.record(self.tenant,"program","program-doc","c"*64,2000,reviewed)
+        self.book.prepare_enrollment(self.tenant,"bank",terms)
+        self.assertEqual(self.control("program")["status"],"reported-unverified")
+        # Changing an account and then restoring its old draft is still a new scope.
+        self.book.prepare_enrollment(self.tenant,"bank",{**terms,"account_reference":"replacement"})
+        self.book.prepare_enrollment(self.tenant,"bank",terms)
+        self.assertNotEqual(scope(),reviewed)
+        self.assertEqual(self.control("program")["status"],"scope-changed")
+        with self.assertRaisesRegex(Error,"readiness_scope_changed"):
+            self.ready.record(self.tenant,"program","late-doc","d"*64,2000,reviewed)
+        current=scope()
+        self.ready.record(self.tenant,"program","renewed-doc","e"*64,2000,current)
+        second=self.ready.set_profile(self.tenant,"b"*64,current)["scope"]["sha256"]
+        self.ready.set_profile(self.tenant,"a"*64,second)
+        self.assertEqual(self.control("program")["status"],"scope-changed")
+        packet=json.dumps(self.ready.packet(self.tenant))
+        for private in ("test-account","program-doc",current,"e"*64):
+            self.assertNotIn(private,packet)
 
     def test_operational_audit_tampering_is_detected_independently_of_balances(self):
         self.ready.record(self.tenant,"entity","report-1","a"*64,1100)

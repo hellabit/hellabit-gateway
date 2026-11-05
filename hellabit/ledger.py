@@ -125,6 +125,7 @@ def bind_gateway_writer(db):
     db.create_function("hellabit_write_epoch_9", 0, lambda: 9)
     db.create_function("hellabit_write_epoch_10", 0, lambda: 10)
     db.create_function("hellabit_write_epoch_11", 0, lambda: 11)
+    db.create_function("hellabit_write_epoch_12", 0, lambda: 12)
     return db
 
 
@@ -543,7 +544,9 @@ class Ledger:
             for value in body.values(): identifier(value)
         with self.transaction() as db:
             self.tenant(db, tenant)
-            db.execute("INSERT INTO enrollments VALUES(?,?,?,?) ON CONFLICT(tenant,rail) DO UPDATE SET body=excluded.body,updated=excluded.updated", (tenant, rail, canonical(body), self.clock()))
+            db.execute("""INSERT INTO enrollments(tenant,rail,body,updated) VALUES(?,?,?,?)
+                ON CONFLICT(tenant,rail) DO UPDATE SET body=excluded.body,updated=excluded.updated,revision=enrollments.revision+1
+                WHERE enrollments.body<>excluded.body""", (tenant, rail, canonical(body), self.clock()))
         return {"rail": rail, "status": "prepared", "externally_verified": False, "live_enabled": False}
 
     def reconcile(self, tenant, *, db=None):

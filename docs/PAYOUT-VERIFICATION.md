@@ -63,6 +63,27 @@ python3 scripts/verify_payout.py --evidence "$PAYOUT_EVIDENCE" \
 | 1 | Stop the check. `fail` identifies conflicting evidence, such as two accepted payment IDs. `review` identifies a missing or incomplete proof. |
 | 2 | Correct the evidence format or file selection and rerun. |
 
+## Decide whether the integration is worth changing
+
+Pick one payout flow with a meaningful cost when the original outcome goes
+missing. Before testing, write down the provider test account, application build,
+asset, interruption to reproduce, recovery deadline and who owns any manual
+reconciliation. Use the same case for the existing flow and any proposed change.
+
+| Observed result | Next decision |
+| --- | --- |
+| The original payment is found once, the application clears the exact hold and both readbacks agree inside the deadline. | Keep the regression check. The test gives no reason to replace a working integration. |
+| The provider exposes the original identity, but the application retries with a different one, cannot recover, or records the wrong balances. | Fix that path and repeat the same capture. An outbox or a targeted accounting fix may be enough. |
+| Provider lookup is partial, no independent application readback is available, or the agreement does not define who resolves ambiguity. | Keep the result open. Assign an owner and get the missing evidence before making an operating decision. |
+
+Keep the private evidence file and verifier output together. Record the build,
+provider lookup and retention terms, observed time, deadline and any untested
+failure cases. A pass applies to that captured test. Changes to the build,
+account, lookup contract, configuration or operating responsibilities call for
+another review. A signed package proves source identity, internal reconciliation
+checks journal consistency, and a provider settlement statement is separate
+evidence of actual money movement.
+
 The verifier checks the observations supplied by your test harness. Provider
 identity, completeness, lookup retention, and the meaning of an accepted or
 settled status depend on that provider and account. Record those guarantees
