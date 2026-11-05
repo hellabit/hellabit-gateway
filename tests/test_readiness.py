@@ -7,7 +7,7 @@ from unittest.mock import patch
 import zipfile
 from hellabit import __version__
 from hellabit.ledger import Ledger,Error
-from hellabit.readiness import Readiness,REQUIREMENTS,SOURCE_ROOT_FILES,local_build,source_names
+from hellabit.readiness import Readiness,REQUIREMENTS,local_build,source_names
 
 class ReadinessTests(unittest.TestCase):
     def setUp(self):
@@ -25,7 +25,7 @@ class ReadinessTests(unittest.TestCase):
         self.assertTrue(all(c["status"]=="reported-unverified" for c in result["external_controls"]))
         self.assertFalse(result["legal_role_resolved"]);self.assertFalse(result["live_payments_enabled"])
         self.assertTrue(result["activation_blocked"])
-        self.assertFalse(result["new_paid_services_enabled"]);self.assertFalse(result["outbound_sales_enabled"])
+        self.assertNotIn("outbound_sales_enabled",result)
         packet=self.ready.packet(self.tenant)
         self.assertFalse(packet["operator_identity_included"]);self.assertFalse(packet["legal_determination_included"])
         self.assertNotIn(self.tenant,json.dumps(packet));self.assertNotIn("synthetic-document",json.dumps(packet))
@@ -50,10 +50,20 @@ class ReadinessTests(unittest.TestCase):
         self.assertTrue(observed["ledger_balanced"]);self.assertFalse(observed["control_audit_valid"])
 
 class SourceProofTests(unittest.TestCase):
+    def test_unlisted_notes_and_operator_instructions_never_enter_the_public_set(self):
+        (self.root/"docs").mkdir();(self.root/"docs/internal.md").write_text("unpublished internal note")
+        (self.root/"AGENTS.md").write_text("local operator instructions")
+        self.assertNotIn("docs/internal.md",source_names(self.root));self.assertNotIn("AGENTS.md",source_names(self.root))
+        self.assertEqual(local_build()["status"],"packaged-source-matches-proof")
+        manifest=json.loads((self.root/"PUBLIC_FILES.json").read_text());manifest["files"].append("AGENTS.md")
+        (self.root/"PUBLIC_FILES.json").write_text(json.dumps(manifest))
+        with self.assertRaisesRegex(ValueError,"unsafe_public_path"):source_names(self.root)
+
     def setUp(self):
         self.tmp=tempfile.TemporaryDirectory();self.root=Path(self.tmp.name)
-        for name in SOURCE_ROOT_FILES:(self.root/name).write_text("synthetic public source\n")
+        for name in ("README.md","LICENSE"):(self.root/name).write_text("synthetic public source\n")
         (self.root/"hellabit").mkdir();(self.root/"hellabit/example.py").write_text("pass\n")
+        (self.root/"PUBLIC_FILES.json").write_text(json.dumps({"schema":"hellabit.public-files.v1","files":["PUBLIC_FILES.json","README.md","LICENSE","hellabit/example.py"]}))
         self.hashes={n:hashlib.sha256((self.root/n).read_bytes()).hexdigest() for n in source_names(self.root)}
         self.source_hash=hashlib.sha256(json.dumps(self.hashes,sort_keys=True).encode()).hexdigest()
         self.proof={"sourceTreeSha256":self.source_hash,"pythonTests":1,"sdkTests":1,"contractChecks":1,

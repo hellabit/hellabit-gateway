@@ -4,7 +4,7 @@ import hmac
 import json
 import secrets
 from .control import audit, ensure_schema
-from .ledger import Error, canonical, digest, identifier
+from .ledger import Error, canonical, digest, identifier, units
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS execution_intents(
@@ -25,12 +25,31 @@ CREATE TRIGGER IF NOT EXISTS observation_no_update BEFORE UPDATE ON execution_ob
  BEGIN SELECT RAISE(ABORT,'append_only'); END;
 CREATE TRIGGER IF NOT EXISTS observation_no_delete BEFORE DELETE ON execution_observations
  BEGIN SELECT RAISE(ABORT,'append_only'); END;
+CREATE TABLE IF NOT EXISTS payment_adjustments(
+ tenant TEXT NOT NULL,intent TEXT NOT NULL,event_id TEXT NOT NULL,kind TEXT NOT NULL,
+ amount INTEGER NOT NULL,reference TEXT NOT NULL,proof_hash TEXT NOT NULL,body TEXT NOT NULL,
+ created INTEGER NOT NULL,PRIMARY KEY(tenant,event_id));
+CREATE TRIGGER IF NOT EXISTS payment_adjustment_no_update BEFORE UPDATE ON payment_adjustments
+ BEGIN SELECT RAISE(ABORT,'append_only'); END;
+CREATE TRIGGER IF NOT EXISTS payment_adjustment_no_delete BEFORE DELETE ON payment_adjustments
+ BEGIN SELECT RAISE(ABORT,'append_only'); END;
 """
 
 class Operations:
     def __init__(self, book):
         self.book = book
         ensure_schema(book, "operations", SCHEMA)
+        # Existing v0.4 identities are preserved byte-for-byte. New identities
+        # are deterministic; an upgrade must never rename an existing payment.
+        if not getattr(book,"_connection_migrated",False):
+            with book.transaction() as db:
+                if "connection" not in {r[1] for r in db.execute("PRAGMA table_info(execution_intents)")}:
+                    db.execute("ALTER TABLE execution_intents ADD COLUMN connection TEXT NOT NULL DEFAULT ''")
+                    db.execute("UPDATE execution_intents SET connection='sandbox:'||rail||':'||asset")
+                db.execute("""CREATE TRIGGER IF NOT EXISTS intent_connection_immutable
+                    BEFORE UPDATE OF connection ON execution_intents
+                    BEGIN SELECT RAISE(ABORT,'intent_connection_is_immutable'); END;""")
+            book._connection_migrated=True
         if not getattr(book, "_payout_backfill_complete", False):
             with book.transaction() as db:
                 rows = db.execute("""SELECT p.* FROM payouts p LEFT JOIN execution_intents e
@@ -44,15 +63,20 @@ class Operations:
 
     def enqueue(self, db, tenant, payout, asset, amount, recipient, migrated=False):
         rail = self.book.asset(db, tenant, asset)["rail"]
-        id_ = "intent_" + secrets.token_hex(12)
+        id_ = "intent_" + digest(["payout-intent-v2", tenant, payout])[:48]
         body = {"payout": payout, "rail": rail, "asset": asset, "amount": amount, "recipient": recipient}
+        # This release has one synthetic account per rail/asset. A real adapter
+        # must bind its actual provider/account scope before it can be enabled.
+        connection = "sandbox:" + rail + ":" + asset
+        body["connection"]=connection
+        body["command_hash"]=db.execute("SELECT request_hash FROM payouts WHERE tenant=? AND id=?",(tenant,payout)).fetchone()[0]
         now = self.book.clock()
         state = "unknown" if migrated else "prepared"
         error = "migrated_payout_requires_reconciliation" if migrated else None
         db.execute("""INSERT INTO execution_intents
-            (id,tenant,payout,rail,asset,amount,recipient,external_key,request_hash,state,last_error,created,updated)
-            VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)""",
-            (id_, tenant, payout, rail, asset, amount, recipient, "hb-" + id_, digest(body), state, error, now, now))
+            (id,tenant,payout,rail,asset,amount,recipient,external_key,request_hash,state,last_error,created,updated,connection)
+            VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+            (id_, tenant, payout, rail, asset, amount, recipient, "hb-" + id_, digest(body), state, error, now, now,connection))
         audit(self.book, db, tenant, "intent-created", id_, {"state": state, "payout": payout})
         return id_
 
@@ -92,11 +116,12 @@ class Operations:
         if intent is not None: identifier(intent)
         with self.book.transaction() as db:
             self.book.tenant(db, tenant)
+            self.book.assert_payment_writes(db)
             self._expire(db, tenant)
             row = db.execute("""SELECT e.* FROM execution_intents e WHERE e.tenant=? AND e.state='prepared'
                 AND (? IS NULL OR e.id=?)
                 AND NOT EXISTS(SELECT 1 FROM execution_intents uncertain
-                  WHERE uncertain.tenant=e.tenant AND uncertain.rail=e.rail
+                  WHERE uncertain.tenant=e.tenant AND uncertain.connection=e.connection
                     AND uncertain.state IN ('unknown','submitting'))
                 ORDER BY e.created,e.rowid LIMIT 1""", (tenant,intent,intent)).fetchone()
             if not row: return None
@@ -217,10 +242,67 @@ class Operations:
             self._expire(db, tenant)
             row = db.execute("SELECT * FROM execution_intents WHERE tenant=? AND id=?", (tenant, intent)).fetchone()
             if not row: raise Error("intent_not_found", 404)
-            if row["state"] in ("confirmed", "failed"): return self.public(row)
-            if row["state"] != "unknown": raise Error("submission_still_in_progress", 409)
+            terminal = row["state"] in ("confirmed", "failed")
+            if terminal:
+                key = row["external_key"]
+            elif row["state"] != "unknown": raise Error("submission_still_in_progress", 409)
             key = row["external_key"]
+        if terminal:
+            if row["state"] == "confirmed" and callable(getattr(adapter,"adjustments",None)):
+                for event in adapter.adjustments(key):
+                    self.adjust(tenant,intent,event)
+            return self.get(tenant,intent)
         receipt = adapter.lookup(key)
         # Absence is inconclusive. It never releases funds or queues another send.
         if receipt is None: return {**self.get(tenant, intent), "lookup": "not-found-inconclusive"}
         return self.finish(tenant, intent, receipt, source="lookup")
+
+    def cancel_unknown(self, tenant, intent, adapter):
+        """Only an authoritative, permanent no-effect record can release a hold."""
+        self._adapter(adapter)
+        row=self.get(tenant,intent)
+        with self.book.db() as db:self.book.assert_payment_writes(db)
+        if row["state"]!="unknown":raise Error("unknown_payment_required",409)
+        if row["last_error"]=="migrated_payout_requires_reconciliation":
+            raise Error("legacy_payment_identity_requires_external_reconciliation",423)
+        close=getattr(adapter,"close_without_effect",None)
+        if not callable(close):raise Error("authoritative_cancellation_not_supported",423)
+        receipt=close(row)
+        return self.finish(tenant,intent,receipt,source="lookup")
+
+    def adjust(self, tenant, intent, event, *, verified_event=None):
+        """Append a later returned movement; never rewrite the original settlement."""
+        required={"mode","key","request_hash","status","reference","amount","asset",
+                  "recipient","event_id","original_reference"}
+        if (not isinstance(event,dict) or set(event)!=required or event["mode"]!="sandbox" or
+                event["status"] not in ("returned","reversed")):
+            raise Error("invalid_payment_adjustment",403)
+        identifier(event["event_id"]);identifier(event["reference"]);units(event["amount"])
+        proof=digest(event)
+        with self.book.transaction() as db:
+            row=db.execute("SELECT * FROM execution_intents WHERE tenant=? AND id=?",(tenant,intent)).fetchone()
+            if not row or row["state"]!="confirmed":raise Error("confirmed_payment_required",409)
+            expected={"key":row["external_key"],"request_hash":row["request_hash"],"asset":row["asset"],
+                      "recipient":row["recipient"],"original_reference":row["reference"]}
+            if any(type(event[k]) is not type(v) or event[k]!=v for k,v in expected.items()):
+                raise Error("adjustment_binding_mismatch",403)
+            if verified_event is not None:
+                binding=db.execute("SELECT provider FROM provider_bindings WHERE tenant=? AND rail=?",(tenant,row["rail"])).fetchone()
+                saved=db.execute("SELECT body FROM provider_inbox WHERE tenant=? AND provider=? AND id=?",(tenant,*verified_event)).fetchone()
+                if not binding or binding[0]!=verified_event[0] or not saved or json.loads(saved[0])["receipt"]!=event:
+                    raise Error("verified_provider_event_required",403)
+            old=db.execute("SELECT proof_hash FROM payment_adjustments WHERE tenant=? AND event_id=?",(tenant,event["event_id"])).fetchone()
+            if old:
+                if old[0]!=proof:raise Error("adjustment_identity_conflict",409)
+                return {"event":event["event_id"],"replayed":True}
+            total=db.execute("SELECT COALESCE(SUM(amount),0) FROM payment_adjustments WHERE tenant=? AND intent=?",(tenant,intent)).fetchone()[0]
+            if total+event["amount"]>row["amount"]:raise Error("adjustment_exceeds_payment",409)
+            payout=db.execute("SELECT source FROM payouts WHERE tenant=? AND id=?",(tenant,row["payout"])).fetchone()
+            self.book.consume_rail_event(db,tenant,row["rail"],event["reference"],"payout-adjustment",proof)
+            self.book._post(db,tenant,"payout-"+event["status"],event["event_id"],row["asset"],
+                            [("clearing:"+row["rail"],-event["amount"]),(payout[0],event["amount"])],
+                            {"original_intent":intent,"proof_hash":proof,"mode":"sandbox"})
+            db.execute("INSERT INTO payment_adjustments VALUES(?,?,?,?,?,?,?,?,?)",
+                       (tenant,intent,event["event_id"],event["status"],event["amount"],event["reference"],proof,canonical(event),self.book.clock()))
+            audit(self.book,db,tenant,"payout-adjusted",intent,{"event":event["event_id"],"proof_hash":proof})
+        return {"event":event["event_id"],"amount":event["amount"],"replayed":False}

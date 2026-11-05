@@ -1,6 +1,6 @@
 # Security boundary
 
-Version 0.4 is not approved for custody, real payments or redeemable issuance.
+Version 0.5 is not approved for custody, real payments or redeemable issuance.
 Do not expose its loopback owner console through a reverse proxy or tunnel.
 Owner sessions assume the current local user controls the machine; the loopback interface is not a
 public identity system. The optional ASGI API verifies pinned issuer signatures
@@ -73,8 +73,12 @@ Restore authenticates before creating a new destination and refuses overwrite.
 The local drill is not evidence of production key custody, offsite retention or
 incident staffing. Back up the separate provider's authoritative state according
 to its contract; a gateway restore must reconcile original payment identities.
-The encrypted backup size limit is 64 MiB; no horizontal scaling or
-maintenance-free financial operation is claimed.
+Version 2 backups stream authenticated chunks with a 1 GiB database ceiling;
+capacity warnings begin at 80 percent. Legacy version 1 backups remain readable.
+Restored databases start in financial quarantine. No automatic promotion,
+quarantine bypass or production recovery acceptance is supplied. Reconcile missing
+commands, movements and later adjustments using independent provider records,
+and fence the previous writer outside the restored database before promotion.
 
 The additional publication pass rejects duplicate JWT JSON members, limits the
 entire request-body read to five seconds, and requires a signed recent auth_time
@@ -83,7 +87,3 @@ financial application additionally requires the saved workspace/rail/provider
 binding. A callback that wins a worker race cannot cause a replacement send.
 Fencing cannot cancel a request already accepted by an external institution;
 real adapters still need their own stable identity and status contract.
-
-The Google review bundle is a reproducible copy of shareable source, not proof
-that Google reviewed it. Review findings must name the exact source hash and be
-independently reproduced. Any code change makes the older review stale.

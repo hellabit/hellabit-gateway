@@ -171,6 +171,11 @@ class Ledger:
             raise Error("workspace_not_found", 404)
         return dict(row)
 
+    def assert_payment_writes(self, db):
+        """A restored snapshot cannot authorize new financial effects."""
+        if db.execute("SELECT 1 FROM settings WHERE key='recovery_quarantine'").fetchone():
+            raise Error("restored_database_quarantined", 423)
+
     def create_tenant(self, name, country="CA"):
         if not isinstance(name, str) or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9 .&'-]{1,59}", name):
             raise Error("invalid_workspace_name", 400)
@@ -285,6 +290,7 @@ class Ledger:
         return db.execute("SELECT COALESCE(SUM(amount),0) FROM operations WHERE tenant=? AND asset=? AND customer=? AND state IN ('reserved','uncertain')", (tenant, asset, customer)).fetchone()[0]
 
     def _post(self, db, tenant, kind, reference, asset, entries, metadata=None):
+        self.assert_payment_writes(db)
         entries = sorted([[a, n] for a, n in entries if n])
         if not entries or sum(n for _, n in entries) or any(type(n) is not int or abs(n) > MAX_BALANCE for _, n in entries):
             raise Error("unbalanced_posting", 500)
@@ -342,6 +348,7 @@ class Ledger:
         identifier(key); identifier(quote)
         request = digest([customer, quote]); key_hash = digest(key)
         with self.transaction() as db:
+            self.assert_payment_writes(db)
             self.tenant(db, tenant); self.customer(db, tenant, customer)
             old = db.execute("SELECT * FROM operations WHERE tenant=? AND key_hash=?", (tenant, key_hash)).fetchone()
             if old:
@@ -376,6 +383,7 @@ class Ledger:
             raise Error("invalid_result_hash", 400)
         with self.transaction() as db:
             row = self._operation(db, tenant, op)
+            self.assert_payment_writes(db)
             if row["state"] == outcome:
                 if outcome == "committed" and row["result_hash"] != result_hash:
                     raise Error("result_conflict")

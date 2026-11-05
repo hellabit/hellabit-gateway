@@ -102,6 +102,8 @@ try{
  await nav('issuer');await page.fill('#issuer-name','Example Institution Dollar');await page.fill('#issuer-symbol','EXUSD');await click('#issuer-config button[type=submit]');
  check('Issuance is disabled until current reserve evidence exists',await page.locator('#mint').isDisabled());
  await click('#attest');await click('#mint');data=await snapshot();
+ await click('#attest-balance');
+ check('Full reserve refresh covers the complete balance without adding a deposit',(await snapshot()).issuer.reserve===100000000&&(await page.locator('#action-message').textContent()).includes('complete test reserve balance'));
  check('White-label issuer has independent identity and reserve limit',data.issuer.symbol==='EXUSD'&&data.issuer.supply===10000000&&data.issuer.reserve===100000000);
  check('Used currency identity is visibly fixed and reserve expiry is shown',await page.locator('#save-issuer').isDisabled()&&await page.locator('#issuer-name').isDisabled()&&(await page.locator('#issuer-metrics').textContent()).includes('expires'));
  await click('#redeem');data=await snapshot();let redemption=data.issuer.redemptions[0];
@@ -109,9 +111,15 @@ try{
  await click(`[data-payout="${redemption.id}"]`);data=await snapshot();
  check('Verified test payout closes claim and reduces reserves',data.issuer.pending_redemptions===0&&data.issuer.reserve===99000000);
  check('Reserve records do not claim actual fiat backing',data.issuer.real_reserves_verified===false&&data.live_payments_enabled===false);
+ await nav('work');await page.selectOption('#work-asset','issued:'+data.workspace.id);await page.fill('#job-amount','1.00');await click('#reserve');data=await snapshot();op=newest(data).id;await click(`[data-op="${op}"][data-action="run"]`);
+ await nav('issuer');await page.selectOption('#redeem-source','merchant');await page.fill('#redeem-amount','0.99');await click('#redeem');data=await snapshot();redemption=data.issuer.redemptions[0];
+ check('Merchant token proceeds can become a separately identified redemption claim',redemption.source==='merchant'&&redemption.amount===990000&&redemption.state==='pending');
+ await click(`[data-payout="${redemption.id}"]`);data=await snapshot();
+ check('Merchant redemption completes without losing its remaining token balance',data.issuer.pending_redemptions===0&&asset(data,'issuer').merchant===9000);
+ await page.selectOption('#redeem-source','customer');await page.fill('#redeem-amount','1.00');
  await nav('connections');
  await page.locator('.partner-card').first().waitFor({state:'attached'});
- check('Connection recommendations distinguish queued mail without claiming enrollment',await page.locator('.partner-card').count()===3&&(await page.locator('#partner-plan').textContent()).includes('Circle Mint')&&await page.getByText('ENQUIRY SENT · FIT UNCONFIRMED',{exact:true}).count()===2&&await page.getByText('ENQUIRY QUEUED · FIT UNCONFIRMED',{exact:true}).count()===1);
+ check('Connection profiles contain no relationship claims',await page.locator('.partner-card').count()===3&&(await page.locator('.partner-card .connection-status').allTextContents()).every(text=>text==='NOT CONNECTED'));
  const forms={bank:{institution_reference:'example-bank-ca',account_reference:'example-settlement-account'},usdc:{receiver:'0x'+'1'.repeat(40),signer_reference:'example-signer'},issuer:{legal_operator_reference:'example-legal-issuer',reserve_custodian_reference:'example-custodian'}};
  for(const [rail,fields]of Object.entries(forms)){for(const [name,value]of Object.entries(fields))await page.fill(`form[data-enroll="${rail}"] [name="${name}"]`,value);await click(`form[data-enroll="${rail}"] button`);}
  data=await snapshot();check('Bank USDC and issuer onboarding persist separately',data.enrollments.length===3&&data.enrollments.every(e=>e.status==='prepared'&&!e.externally_verified));

@@ -1,126 +1,58 @@
 {
-  "schema": "hellabit.connection-plan.v1",
-  "reviewed_at": "2026-11-04",
-  "status": "enquiries-submitted-fit-unconfirmed",
+  "schema": "hellabit.connection-profiles.v2",
+  "status": "not-configured",
   "live_enabled": false,
-  "initial_market": "Canadian business operators selling paid API work",
-  "first_agent_protocol": "x402; adapter not implemented or certified",
   "partners": [
     {
-      "id": "peoples-group",
-      "role": "01 / CANADIAN BANK SETTLEMENT",
-      "name": "Peoples Group",
-      "reason": "First institution to evaluate for CAD EFT, Interac and safeguarded customer funds. Keep the bank agreement and settlement evidence separate from the application ledger.",
-      "condition": "Confirm program eligibility, trust structure, API access, returns, pricing and stablecoin-related restrictions. USD access requires its own approved account and agreement.",
+      "id": "bank",
+      "role": "01 / BANK SETTLEMENT",
+      "name": "Your approved bank connection",
+      "reason": "Keep existing bank settlement and account authority. Bind each account, currency and provider to an explicit connection before enabling execution.",
+      "condition": "A synthetic account is supplied for each test currency. No live bank adapter or account is configured.",
       "source": "https://www.peoplesgroup.com/fintech/solutions/payments/money-movement",
-      "additional_sources": [
-        "https://www.peoplesgroup.com/fintech/solutions/payments/trust-services"
-      ],
-      "state": "enquiry-submitted",
       "required_binding": [
-        "legal entity",
-        "approved activities",
-        "institution identifier",
-        "scoped account reference",
-        "signed settlement events",
-        "return handling",
-        "independent bank statement readback"
+        "provider and account scope",
+        "supported currencies",
+        "immutable command terms",
+        "lookup and retention guarantees",
+        "returns and statement reconciliation"
       ],
-      "enquiry_date": "2026-11-04",
-      "fit_confirmed": false,
-      "account_connected": false,
-      "enquiry_delivery": "submission-final",
-      "enquiry_delivery_observed_at": "2026-11-04"
+      "state": "not-configured",
+      "account_connected": false
     },
     {
-      "id": "circle-mint",
-      "role": "02 / DIRECT USDC ACCESS",
-      "name": "Circle Mint",
-      "reason": "Evaluate direct institutional mint and redemption access to USDC. Circle lists Canadian bank domiciles for supported wires; this does not establish account approval.",
-      "condition": "Institutional eligibility and KYB approval come first. Base Sepolia is the test network; mainnet asset, receiver, signer, RPC and finality must be enrolled separately.",
-      "source": "https://www.circle.com/circle-mint",
-      "additional_sources": [
-        "https://developers.circle.com/circle-mint/references/supported-countries"
-      ],
-      "state": "enquiry-submitted",
-      "test_network": "eip155:84532",
-      "proposed_production_network": "eip155:8453; disabled",
+      "id": "usdc",
+      "role": "02 / NATIVE USDC",
+      "name": "Native USDC connection",
+      "reason": "Keep token identity, signing authority and chain evidence explicit. Read-only indexing never proves a payout or authorizes a transaction.",
+      "condition": "The included asset is Base Sepolia test USDC. Production network, asset, signer and finality require separate configuration.",
+      "source": "https://developers.circle.com/",
       "required_binding": [
-        "approved Circle institution",
-        "approved USD bank account",
-        "native USDC chain and address",
-        "recipient address",
-        "scoped signer",
-        "trusted RPC",
-        "finality policy",
-        "deposit and redemption readback"
+        "approved operating role",
+        "exact network and native token",
+        "recipient and signer scope",
+        "RPC and finality policy",
+        "deposit and redemption reconciliation"
       ],
-      "enquiry_date": "2026-11-04",
-      "fit_confirmed": false,
-      "account_connected": false,
-      "enquiry_delivery": "submission-final",
-      "enquiry_delivery_observed_at": "2026-11-04"
+      "state": "not-configured",
+      "account_connected": false
     },
     {
-      "id": "brale",
-      "role": "03 / BRANDED USD ISSUANCE",
-      "name": "Brale",
-      "reason": "First issuer provider to evaluate for a branded USD token with reserves, redemption and custody operated by a legal issuer. Hellabit would supply the brand and product, not claim to be the issuer of record.",
-      "condition": "Canadian distribution eligibility is unconfirmed. Published issuance starts at $1,000/month; total program costs and approval require a quote. Activate only when demand can support those costs.",
-      "source": "https://brale.xyz/issuance",
-      "additional_sources": [
-        "https://brale.xyz/pricing",
-        "https://docs.brale.xyz/"
-      ],
-      "state": "enquiry-submitted",
+      "id": "issuer",
+      "role": "03 / ISSUER PROGRAM",
+      "name": "Approved issuer program",
+      "reason": "Evaluate branded issuance separately from payment recovery. Assign legal issuer, reserve custody, redemption rights and control ownership.",
+      "condition": "Issuer lab is synthetic only. No redeemable issuance or provider relationship is enabled.",
+      "source": "https://docs.brale.xyz/",
       "required_binding": [
-        "legal issuer of record",
-        "permitted jurisdictions",
-        "distribution agreement",
-        "reserve custody and assurances",
-        "redemption rights",
-        "contract and control roles",
-        "program pricing",
-        "termination and migration rights"
+        "issuer and permitted jurisdictions",
+        "reserve custody and full balance attestations",
+        "all holder redemption rights",
+        "control and incident ownership",
+        "program agreement"
       ],
-      "enquiry_date": "2026-11-04",
-      "fit_confirmed": false,
-      "account_connected": false,
-      "enquiry_delivery": "queued",
-      "enquiry_delivery_observed_at": "2026-11-04",
-      "enquiry_delivery_note": "DNSSEC validation failed for mail delivery; owner BCC delivered; no duplicate submitted."
+      "state": "not-configured",
+      "account_connected": false
     }
-  ],
-  "alternatives": [
-    {
-      "name": "M0 with a non-Stripe issuer",
-      "role": "Issuer-portable branded stablecoin alternative",
-      "source": "https://docs.m0.org/build/overview",
-      "condition": "Issuer and jurisdiction approval, commercial costs and custody arrangements are unresolved. Do not select Bridge. Do not claim a Hellabit token is an M0 extension without implementing and verifying that integration."
-    }
-  ],
-  "distribution": [
-    {
-      "name": "x402",
-      "source": "https://github.com/x402-foundation/x402/blob/main/docs/core-concepts/facilitator.md",
-      "state": "planned-not-implemented",
-      "decision": "Prefer an open protocol and self-operated verification/settlement when the operating role and economics are approved; no protocol compatibility claim for the custom router."
-    }
-  ],
-  "activation_order": [
-    "Sell the paid-API workflow and validate contribution economics",
-    "Approve one bank or direct USDC settlement binding",
-    "Prove a bounded real settlement and refund journey",
-    "Add branded issuance after issuer approval and demonstrated demand"
-  ],
-  "not_authorized_by_this_plan": [
-    "opening financial accounts",
-    "accepting provider agreements",
-    "sending provider applications",
-    "deploying contracts",
-    "moving real funds",
-    "issuing a redeemable token",
-    "publishing or representing a provider as an approved partner"
-  ],
-  "shared_foundation_blocker": "An approved operating entity and partner program, with exact settlement authority and independent readback. No provider enrollment exists in this build."
+  ]
 }

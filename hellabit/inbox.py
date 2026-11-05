@@ -96,5 +96,7 @@ class ProviderInbox:
             if intent["state"] in ("confirmed","failed") and receipt.get("status")=="pending":
                 return {"event":event_id,"state":"ignored-after-terminal","financial_postings":0}
         from .operations import Operations
+        if receipt.get("status") in ("returned","reversed"):
+            return Operations(self.book).adjust(tenant,intent["id"],receipt,verified_event=(self.provider,event_id))
         return Operations(self.book).finish(tenant,intent["id"],receipt,source="verified-inbox",
                                             verified_event=(self.provider,event_id))

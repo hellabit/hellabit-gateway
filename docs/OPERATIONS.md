@@ -49,12 +49,34 @@ Keep production keys outside the backup's failure domain using an enrolled
 custody system. The tool does not enroll that custody or upload offsite copies.
 The rehearsal uses an ephemeral key and removes its temporary recovery files.
 
-Restore checks authentication and database integrity before writing a new path.
-It does not replace the running database. Inspect/reconcile a restore and fence
-active workers before a separately authorized promotion. A restored database may
-precede an accepted external payment: the worker checks the original provider
-identity before any submission. Never invent a new key to clear an unknown.
-The backup limit is 64 MiB; this release is a bounded single-node engine.
+Restore authenticates every chunk and checks database integrity before making a
+new destination visible. It never replaces the running database. Version 2
+backups stream bounded 1 MiB chunks and support databases up to 1 GiB; legacy
+version 1 backups remain readable. Status reports capacity and warns at 80 percent.
+
+Every restored copy starts in financial quarantine. New holds, financial postings
+and payment-worker claims fail closed, even if the snapshot predates a payout.
+Use the copy for inspection. No quarantine-clearing command or automatic
+promotion is provided. A live recovery implementation must reconcile missing
+commands, original provider movements and later corrections, and independently
+fence old writers before authorizing execution. See [the recovery contract](CONFORMANCE.md).
+
+## Close a payment proven never accepted
+
+```sh
+python3 scripts/operate.py --tenant WORKSPACE_ID cancel-unknown --intent INTENT_ID
+```
+
+The synthetic provider arbitrates closing and sending in one transaction. An
+already accepted payment is recovered; otherwise a permanent no-effect record
+prevents a delayed worker from submitting the same identity. Only then does the
+ledger return its hold. This does not implement any bank's cancellation protocol.
+Unsupported adapters must retain the hold and escalate; an empty lookup is not proof.
+
+Later synthetic provider returns are discovered by reconciling the original
+confirmed intent. Separately identified compensating postings preserve its
+original settlement and cannot exceed the paid amount. General fees, disputes
+and other institution-specific adjustments remain outside this event contract.
 
 ## Exact usage invoices
 
@@ -114,6 +136,20 @@ python3 scripts/operate.py --tenant WORKSPACE_ID identity grant --binding .priva
 python3 scripts/operate.py --tenant WORKSPACE_ID identity revoke --binding .private/api.json --principal PRINCIPAL_ID
 ```
 
+Renewal uses a private JSON file containing `expires`; permissions stay unchanged:
+
+```sh
+python3 scripts/operate.py --tenant WORKSPACE_ID identity renew --binding .private/api.json --principal PRINCIPAL_ID --expected-version VERSION --grant .private/renewal.json
+```
+
+Each grant change returns a version. Stale versions fail rather than overwriting
+newer authority. `replace` accepts deliberate role/customer/rate changes;
+`reinstate` explicitly reauthorizes a revoked principal. Both use the same
+principal/version/private-file arguments. A subject cannot be silently reenrolled.
+Existing tokens do not gain renewed or reinstated authority: obtain an access
+token issued at or after the returned `tokens_issued_at_or_after` time. Identity,
+revocation and every grant version remain auditable.
+
 The configuration state must match the selected database. RS256 signatures,
 issuer, audience, key ID, token purpose, expiry and issuance time are checked.
 Access tokens last at most 15 minutes; grants at most 31 days. Token-supplied
@@ -150,3 +186,36 @@ verification. `ProviderInbox` requires a workspace/rail/provider binding and sig
 provider-specific domain plus timestamp/raw body. It is a tested HMAC reference protocol, not a claimed
 Circle/bank webhook implementation. Enroll actual provider signatures and status
 semantics before adding any real financial adapter.
+
+## Health, incidents and supported limits
+
+`/api/health` is liveness only. An authenticated workspace `GET /ready` checks
+database access and the recovery gate; it does not assert financial readiness.
+Unexpected API failures return a correlation ID and emit a diagnostic record
+containing only that ID and the exception type. They exclude messages, paths,
+claims, tokens and request bodies. Capture the API logger in the deployment's
+chosen incident system; this repository does not enroll one.
+
+RPC timeout is one monotonic deadline across DNS, TLS, response and retries.
+Outstanding system resolvers are bounded, and a watchdog closes a dripping
+connection. Circuit and response-size limits still apply.
+
+Usage ingestion updates an indexed running total in the insertion transaction.
+Invoice close cross-checks the immutable event history before accepting that
+total. Use batch identities for large quantities. The engine remains a bounded
+single-node implementation. The included baseline reports observed local
+latency, database size and metering timing, not a production throughput promise.
+
+## Export the complete financial record
+
+```sh
+python3 scripts/operate.py --tenant WORKSPACE_ID export --output .private/history.jsonl
+```
+
+The JSON Lines file contains a consistent workspace snapshot of journals,
+postings, business-command identities, provider observations, later adjustments,
+authorization history and usage records. A terminal checksum covers every
+preceding line. Credentials, lease secrets and payment authority are excluded.
+The file is confidential: it includes customer inputs and financial records.
+It is owner-only, refuses overwrite, and is an audit export rather than a tool
+that restores provider authority or replaces encrypted backups.

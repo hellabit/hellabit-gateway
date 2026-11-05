@@ -67,12 +67,31 @@ class BackupTests(unittest.TestCase):
             source=self.backup
             if key==self.key:
                 source=self.root/"tampered.hbbackup"
-                body=json.loads(self.backup.read_text());cipher=body["ciphertext"]
-                body["ciphertext"]=("A" if cipher[0]!="A" else "B")+cipher[1:]
-                source.write_text(json.dumps(body))
+                data=bytearray(self.backup.read_bytes());data[-1]^=1
+                source.write_bytes(data)
             target=self.root/"must-not-exist.sqlite3"
             with self.assertRaisesRegex(Error,"backup_authentication_failed"):restore(source,target,key)
             self.assertFalse(target.exists())
         with self.assertRaisesRegex(Error,"restore_target_exists"):restore(self.backup,self.book.path,self.key)
         with self.assertRaisesRegex(Error,"backup_target_exists"):create(self.book,self.backup,self.key)
         self.assertTrue(self.book.reconcile(self.tenant)["ok"])
+
+    def test_streaming_snapshot_exceeds_the_legacy_limit_and_restores_in_quarantine(self):
+        with self.book.db() as db:
+            db.execute("CREATE TABLE large_synthetic_payload(data BLOB)")
+            db.execute("INSERT INTO large_synthetic_payload VALUES(zeroblob(67108865))")
+        result=create(self.book,self.backup,self.key)
+        self.assertEqual(result["format_version"],2)
+        self.assertGreater(result["bytes"],64*1024*1024)
+        target=self.root/"large.sqlite3";restore(self.backup,target,self.key)
+        with Ledger(target).db() as db:
+            self.assertEqual(db.execute("SELECT length(data) FROM large_synthetic_payload").fetchone()[0],67108865)
+            self.assertIsNotNone(db.execute("SELECT 1 FROM settings WHERE key='recovery_quarantine'").fetchone())
+
+    def test_chunk_truncation_and_appended_data_never_create_a_target(self):
+        create(self.book,self.backup,self.key);data=self.backup.read_bytes()
+        for index,body in enumerate((data[:-1],data+b"extra",data[:20])):
+            bad=self.root/("bad-"+str(index));bad.write_bytes(body)
+            target=self.root/("target-"+str(index))
+            with self.assertRaisesRegex(Error,"backup_authentication_failed"):restore(bad,target,self.key)
+            self.assertFalse(target.exists())

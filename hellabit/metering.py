@@ -25,6 +25,14 @@ CREATE TABLE IF NOT EXISTS usage_invoices(
  closing_carry_micro INTEGER NOT NULL,created INTEGER NOT NULL,PRIMARY KEY(tenant,plan,period));
 CREATE TRIGGER IF NOT EXISTS invoice_no_update BEFORE UPDATE ON usage_invoices BEGIN SELECT RAISE(ABORT,'append_only'); END;
 CREATE TRIGGER IF NOT EXISTS invoice_no_delete BEFORE DELETE ON usage_invoices BEGIN SELECT RAISE(ABORT,'append_only'); END;
+CREATE INDEX IF NOT EXISTS usage_period ON usage_events(tenant,plan,period);
+CREATE TABLE IF NOT EXISTS usage_totals(
+ tenant TEXT NOT NULL,plan TEXT NOT NULL,period TEXT NOT NULL,micro INTEGER NOT NULL,
+ PRIMARY KEY(tenant,plan,period));
+CREATE TRIGGER IF NOT EXISTS usage_accumulate AFTER INSERT ON usage_events BEGIN
+ INSERT INTO usage_totals VALUES(NEW.tenant,NEW.plan,NEW.period,NEW.micro)
+ ON CONFLICT(tenant,plan,period) DO UPDATE SET micro=micro+NEW.micro;
+END;
 """
 
 def period(value):
@@ -36,6 +44,11 @@ class UsageMeter:
     def __init__(self, book):
         self.book = book
         ensure_schema(book, "metering", SCHEMA)
+        with book.transaction() as db:
+            if not db.execute("SELECT 1 FROM settings WHERE key='usage_totals_v1'").fetchone():
+                db.execute("""INSERT OR REPLACE INTO usage_totals
+                    SELECT tenant,plan,period,SUM(micro) FROM usage_events GROUP BY tenant,plan,period""")
+                db.execute("INSERT INTO settings VALUES('usage_totals_v1','1')")
 
     def current_period(self):
         return datetime.fromtimestamp(self.book.clock(), timezone.utc).strftime("%Y-%m")
@@ -71,8 +84,8 @@ class UsageMeter:
             if db.execute("SELECT 1 FROM usage_invoices WHERE tenant=? AND plan=? AND period>=?", (tenant,plan,month)).fetchone():
                 raise Error("billing_period_already_closed", 409)
             amount = terms["rate_micro"] * quantity
-            total = db.execute("SELECT COALESCE(SUM(micro),0) FROM usage_events WHERE tenant=? AND plan=? AND period=?",
-                               (tenant,plan,month)).fetchone()[0]
+            row=db.execute("SELECT micro FROM usage_totals WHERE tenant=? AND plan=? AND period=?",(tenant,plan,month)).fetchone()
+            total=row[0] if row else 0
             if amount + total > 2**63 - 10000: raise Error("usage_amount_limit", 409)
             db.execute("INSERT INTO usage_events VALUES(?,?,?,?,?,?,?,?)",
                        (tenant,key_hash,plan,month,quantity,amount,request_hash,self.book.clock()))
@@ -84,8 +97,8 @@ class UsageMeter:
         prior = db.execute("""SELECT * FROM usage_invoices WHERE tenant=? AND plan=?
             AND period<? ORDER BY period DESC LIMIT 1""", (tenant,plan,month)).fetchone()
         carry = prior["closing_carry_micro"] if prior else 0
-        total = db.execute("SELECT COALESCE(SUM(micro),0) FROM usage_events WHERE tenant=? AND plan=? AND period=?",
-                           (tenant,plan,month)).fetchone()[0]
+        row=db.execute("SELECT micro FROM usage_totals WHERE tenant=? AND plan=? AND period=?",(tenant,plan,month)).fetchone()
+        total=row[0] if row else 0
         minor, remainder = divmod(total + carry, 10000)
         if minor + terms["base_minor"] > 10**12: raise Error("invoice_amount_limit", 409)
         return {"currency":terms["currency"],"period":month,"usage_micro":total,"opening_carry_micro":carry,
@@ -112,6 +125,9 @@ class UsageMeter:
                 AND period>? AND period<?""", (tenant,plan,latest or "",month)).fetchone()[0]
             if first: raise Error("earlier_usage_period_must_close_first", 409)
             quote = self._preview(db,tenant,plan,month)
+            authoritative=db.execute("SELECT COALESCE(SUM(micro),0) FROM usage_events WHERE tenant=? AND plan=? AND period=?",
+                                     (tenant,plan,month)).fetchone()[0]
+            if authoritative!=quote["usage_micro"]:raise Error("usage_total_mismatch",409)
             id_ = "invoice_" + secrets.token_hex(12)
             db.execute("INSERT INTO usage_invoices VALUES(?,?,?,?,?,?,?,?,?,?,?,?)",
                 (tenant,plan,month,id_,quote["currency"],quote["usage_micro"],quote["opening_carry_micro"],

@@ -28,10 +28,8 @@ and 700 USD in contribution before taxes and any omitted costs. Volume is an
 input, not a forecast. If variable cost exceeds the fee, more volume makes the
 loss larger.
 
-Brale's [published pricing](https://brale.xyz/pricing), reviewed 2026-11-04,
-lists issuance from 1,000 USD/month, alongside platform/usage costs depending on
-plan. A public stablecoin program could consume the entire illustrative gross
-fee revenue before other costs. Obtain a complete quote and prove demand first.
+Obtain complete provider, infrastructure and operating costs for the chosen
+configuration before setting a commercial price.
 
 Prefer paid software value: a self-hosted core, a hosted usage service with a
 minimum covering fixed operation, and separately priced institutional support.
@@ -56,17 +54,3 @@ open-source core charges no compulsory fee and has no hidden collection or usage
 telemetry. Any hosted usage service requires a separate chosen service, agreement,
 billable usage definition and actual collection mechanism.
 
-## Zero-spend distribution decision
-
-The current release spends nothing on new services and sends no further outbound
-prospecting. A complete README, runnable recovery example, reproducible checks,
-issue form and inbound contact make the software assessable without a sales call.
-No paid listing or API marketplace is assumed to supply buyers. Free distribution
-does not prove acquisition or remove support and infrastructure costs.
-
-The proposed first paid offer is operating one supported merchant-controlled
-configuration for a team that already has a settlement relationship. Price its
-base operation and usage from actual costs and responsibility before accepting
-payment. Keep deployment/help outside a tiny per-event margin unless that margin
-pays for the required work. No automatic fee, wallet or payment processor is
-activated by the open-source package.

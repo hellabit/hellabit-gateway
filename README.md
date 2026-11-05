@@ -6,7 +6,7 @@ A merchant-controlled payment operations engine for API teams: durable payout
 intent, held budgets, original-identity recovery, inspectable results and exact
 usage accounting. Free Apache-2.0 core. No Stripe dependency or compulsory fee.
 
-Version **0.4.0 is a developer pre-release**. The console moves synthetic value;
+Version **0.5.0 is a developer pre-release**. The console moves synthetic value;
 real-money submission remains blocked. Canada and the United States are intended
 markets. No bank, public-chain signer, legal issuer or customer is enrolled.
 
@@ -40,15 +40,12 @@ python3 scripts/bootstrap_api.py
 python3 scripts/run.py --demo
 ```
 
-[Review the exact build with Google](docs/REVIEW.md) using a nine-file bundle; no
-GitHub repost or public history rewrite is needed for each review.
-
 No subscription, account registration or paid provider is required for these
 local examples. Setup downloads open-source packages. Never expose the owner
 console through a public tunnel. Do not enter bank numbers or secrets in draft
 connection forms; use opaque references.
 
-## What 0.4 adds
+## Recovery and operation
 
 | Capability | Proven software behavior | External enrollment still required |
 | --- | --- | --- |
@@ -70,15 +67,29 @@ SDK with TypeScript declarations and private-EVM tests of buyer-authorized
 settlement and white-label issuance contracts. CAD/USD ledger postings use cents;
 test USDC uses six decimals. No currency conversion is inferred.
 
+## Recover through the full lifecycle
+
+Version 0.5 adds stable business-command payout identities, financial quarantine
+on every restore, authoritative synthetic no-effect cancellation, account-scoped
+uncertainty, and separate later-return postings. API grants can renew beyond
+their first month with versioned changes and explicit reinstatement. Encrypted
+backups stream up to 1 GiB; capacity and unresolved-hold age remain visible.
+RPC reads have one total deadline, API incidents carry redacted correlation IDs,
+and usage insertion no longer sums its entire history for each event.
+
+Start with the [payment outcome and recovery contract](docs/CONFORMANCE.md).
+The executable cases demonstrate the synthetic implementation. Live provider
+conformance, independent writer fencing and production restore acceptance remain
+unimplemented and cannot be enabled by saving configuration or evidence.
+
 ## Use it in your project
 
 - [Runnable purchase example](docs/QUICKSTART.md)
 - [Recovery, backup, metering, identity and indexing commands](docs/OPERATIONS.md)
 - [API routes and permissions](docs/API.md)
-- [Google review bundle and release checklist](docs/REVIEW.md)
 - [Architecture](docs/ARCHITECTURE.md), [rail contracts](docs/RAILS.md) and [security](SECURITY.md)
 - [Operating-role review](docs/OPERATING_ROLE.md), [activation](docs/ACTIVATION.md) and [issuer responsibilities](docs/ISSUERS.md)
-- [Commercial economics](docs/ECONOMICS.md), [connection decisions](docs/CONNECTIONS.md) and [product critique](docs/PRODUCT_REVIEW.md)
+- [Commercial economics](docs/ECONOMICS.md), [connection decisions](docs/CONNECTIONS.md)
 
 The SDK accepts a sandbox key or a fresh access-token callback. It never
 silently retries a money mutation or changes a purchase key after a timeout.
@@ -93,6 +104,8 @@ npm ci --ignore-scripts --no-audit --no-fund
 npx playwright install chromium
 python3 scripts/verify.py
 ```
+
+Only the files explicitly listed in `PUBLIC_FILES.json` enter a source package.
 
 One command checks public npm/OSV advisories, Python/API/process recovery,
 contracts in a private EVM, SDK and desktop/mobile journeys. It creates a

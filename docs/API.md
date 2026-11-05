@@ -90,3 +90,13 @@ Owner-only loopback routes added in 0.4: `GET /ops`, `GET /readiness`,
 are exact-field validated. The three execution actions are synthetic only; the
 evidence route accepts a reference, document hash and expiry, never a verified
 flag. None can open the live submission boundary.
+
+
+Deployment API `GET /api/health` reports process liveness only. Authenticated
+`GET /api/v1/workspaces/WORKSPACE_ID/ready` checks database access and restore
+quarantine. Neither establishes provider readiness. Unexpected errors include a
+`correlation_id` matching a redacted diagnostic event.
+
+Subject grant renewals, permission replacement and deliberate reinstatement are
+local operator actions with expected-version checks. They are never authorized
+by token-supplied admin claims. See [identity operation](OPERATIONS.md).

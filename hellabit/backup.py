@@ -7,11 +7,15 @@ import os
 from pathlib import Path
 import secrets
 import sqlite3
+import struct
 import tempfile
 import time
 from .ledger import Error,canonical
 
-LIMIT=64*1024*1024
+LIMIT=1024*1024*1024
+LEGACY_LIMIT=64*1024*1024
+CHUNK=1024*1024
+MAGIC=b"HellabitBackup\x00\x02"
 AAD=b"hellabit.sqlite-backup.v1"
 
 def _key(key):
@@ -32,15 +36,39 @@ def _write_new(path,data):
         finally:os.close(directory)
     finally:Path(temp).unlink(missing_ok=True)
 
+def _publish_file(source,destination):
+    destination=Path(destination).absolute()
+    try:os.link(source,destination)
+    except FileExistsError:raise Error("backup_target_exists",409) from None
+    directory=os.open(destination.parent,os.O_RDONLY)
+    try:os.fsync(directory)
+    finally:os.close(directory)
+
+def capacity(book):
+    with book.db() as db:
+        size=db.execute("PRAGMA page_count").fetchone()[0]*db.execute("PRAGMA page_size").fetchone()[0]
+    return {"database_bytes":size,"backup_limit_bytes":LIMIT,
+            "remaining_bytes":max(0,LIMIT-size),"status":"limit-exceeded" if size>LIMIT else "capacity-warning" if size>=LIMIT*0.8 else "within-limit"}
+
+def _cipher(key,salt):
+    from cryptography.hazmat.primitives import hashes
+    from cryptography.hazmat.primitives.kdf.hkdf import HKDF
+    from cryptography.hazmat.primitives.ciphers.aead import AESGCM
+    derived=HKDF(algorithm=hashes.SHA256(),length=32,salt=salt,info=b"hellabit.backup.v2").derive(key)
+    return AESGCM(derived)
+
 def create(book,destination,key,timeout=10):
     from cryptography.hazmat.primitives.ciphers.aead import AESGCM
     _key(key)
+    destination=Path(destination).absolute()
+    if destination.exists() or destination.is_symlink():raise Error("backup_target_exists",409)
+    destination.parent.mkdir(parents=True,exist_ok=True,mode=0o700)
     if type(timeout) not in (int,float) or not 0<timeout<=60:raise Error("invalid_backup_timeout",400)
     started=time.monotonic()
     def progress(_status,_remaining,_total):
         if time.monotonic()-started>timeout:raise Error("backup_deadline_exceeded",503)
         if _total*page_size>LIMIT:raise Error("backup_size_limit",413)
-    with tempfile.TemporaryDirectory(prefix="hellabit-snapshot-",dir=book.path.parent) as tmp:
+    with tempfile.TemporaryDirectory(prefix="hellabit-snapshot-",dir=destination.parent) as tmp:
         path=Path(tmp)/"snapshot.sqlite3"
         source=book.db();target=sqlite3.connect(path)
         page_size=source.execute("PRAGMA page_size").fetchone()[0]
@@ -48,14 +76,24 @@ def create(book,destination,key,timeout=10):
         try:source.backup(target,pages=100,progress=progress,sleep=0.01)
         finally:target.close();source.close()
         if path.stat().st_size>LIMIT:raise Error("backup_size_limit",413)
-        plaintext=path.read_bytes()
-    nonce=secrets.token_bytes(12)
-    encrypted=AESGCM(key).encrypt(nonce,plaintext,AAD)
-    envelope=canonical({"schema":AAD.decode(),"nonce":base64.b64encode(nonce).decode(),
-                        "ciphertext":base64.b64encode(encrypted).decode()}).encode()
-    _write_new(destination,envelope)
-    return {"schema":"hellabit.backup-result.v1","encrypted":True,"bytes":len(envelope),
-            "ciphertext_sha256":hashlib.sha256(envelope).hexdigest(),"financial_readiness_verified":False}
+        salt,prefix=secrets.token_bytes(16),secrets.token_bytes(8)
+        header=MAGIC+salt+prefix+struct.pack(">QI",path.stat().st_size,CHUNK)
+        cipher=_cipher(key,salt);encrypted_path=Path(tmp)/"encrypted.hbbackup"
+        checksum=hashlib.sha256()
+        with path.open("rb") as source,encrypted_path.open("xb") as output:
+            encrypted_path.chmod(0o600);output.write(header);checksum.update(header)
+            index=0
+            while data:=source.read(CHUNK):
+                if time.monotonic()-started>timeout:raise Error("backup_deadline_exceeded",503)
+                counter=index.to_bytes(4,"big")
+                encrypted=cipher.encrypt(prefix+counter,data,header+counter)
+                output.write(encrypted);checksum.update(encrypted);index+=1
+            output.flush();os.fsync(output.fileno())
+        size=encrypted_path.stat().st_size
+        _publish_file(encrypted_path,destination)
+    return {"schema":"hellabit.backup-result.v2","encrypted":True,"bytes":size,
+            "ciphertext_sha256":checksum.hexdigest(),"financial_readiness_verified":False,
+            "format_version":2,"bounded_memory_bytes":CHUNK*3}
 
 def restore(source,destination,key):
     from cryptography.exceptions import InvalidTag
@@ -65,20 +103,39 @@ def restore(source,destination,key):
     if destination.exists() or destination.is_symlink():raise Error("restore_target_exists",409)
     if source.is_symlink() or not source.is_file() or source.stat().st_size>LIMIT*2:
         raise Error("invalid_backup_source",400)
-    try:
-        body=json.loads(source.read_bytes())
-        if set(body)!={"schema","nonce","ciphertext"} or body["schema"]!=AAD.decode():raise ValueError()
-        nonce=base64.b64decode(body["nonce"],validate=True)
-        ciphertext=base64.b64decode(body["ciphertext"],validate=True)
-        if len(nonce)!=12 or len(ciphertext)>LIMIT+16:raise ValueError()
-        plaintext=AESGCM(key).decrypt(nonce,ciphertext,AAD)
-    except (InvalidTag,ValueError,TypeError,KeyError):
-        raise Error("backup_authentication_failed",403) from None
-    if not plaintext.startswith(b"SQLite format 3\x00") or len(plaintext)>LIMIT:
-        raise Error("backup_database_invalid",400)
     destination.parent.mkdir(parents=True,exist_ok=True,mode=0o700)
     with tempfile.TemporaryDirectory(prefix="hellabit-restore-",dir=destination.parent) as tmp:
-        path=Path(tmp)/"verify.sqlite3";path.write_bytes(plaintext);path.chmod(0o600)
+        path=Path(tmp)/"verify.sqlite3"
+        try:
+            with source.open("rb") as encrypted,path.open("xb") as output:
+                path.chmod(0o600)
+                magic=encrypted.read(len(MAGIC))
+                if magic==MAGIC:
+                    rest=encrypted.read(36)
+                    if len(rest)!=36:raise ValueError()
+                    salt,prefix=rest[:16],rest[16:24]
+                    size,chunk=struct.unpack(">QI",rest[24:])
+                    if not 16<=size<=LIMIT or chunk!=CHUNK:raise ValueError()
+                    header=magic+rest;cipher=_cipher(key,salt)
+                    for index,start in enumerate(range(0,size,CHUNK)):
+                        counter=index.to_bytes(4,"big");length=min(CHUNK,size-start)
+                        data=encrypted.read(length+16)
+                        if len(data)!=length+16:raise ValueError()
+                        output.write(cipher.decrypt(prefix+counter,data,header+counter))
+                    if encrypted.read(1):raise ValueError()
+                else:
+                    if source.stat().st_size>LEGACY_LIMIT*2:raise ValueError()
+                    encrypted.seek(0);body=json.load(encrypted)
+                    if set(body)!={"schema","nonce","ciphertext"} or body["schema"]!=AAD.decode():raise ValueError()
+                    nonce=base64.b64decode(body["nonce"],validate=True)
+                    ciphertext=base64.b64decode(body["ciphertext"],validate=True)
+                    if len(nonce)!=12 or len(ciphertext)>LEGACY_LIMIT+16:raise ValueError()
+                    output.write(AESGCM(key).decrypt(nonce,ciphertext,AAD))
+                output.flush();os.fsync(output.fileno())
+        except (InvalidTag,ValueError,TypeError,KeyError):
+            raise Error("backup_authentication_failed",403) from None
+        with path.open("rb") as f:
+            if f.read(16)!=b"SQLite format 3\x00":raise Error("backup_database_invalid",400)
         try:
             with sqlite3.connect(path.as_uri()+"?mode=ro&immutable=1",uri=True) as db:
                 if db.execute("PRAGMA integrity_check").fetchone()[0]!="ok":
@@ -87,9 +144,21 @@ def restore(source,destination,key):
                 if not required<={r[0] for r in db.execute("SELECT name FROM sqlite_master WHERE type='table'")}:
                     raise Error("backup_database_schema_mismatch",400)
         except sqlite3.DatabaseError:raise Error("backup_database_invalid",400) from None
-        _write_new(destination,plaintext)
+        # This marker is installed before the destination becomes visible. Even
+        # a snapshot taken before a command existed cannot authorize a replay.
+        db=sqlite3.connect(path)
+        try:
+            # Publish a self-contained file. A WAL sidecar in the temporary
+            # directory must never contain the quarantine marker at promotion.
+            db.execute("PRAGMA journal_mode=DELETE")
+            db.execute("INSERT OR REPLACE INTO settings VALUES('recovery_quarantine',?)",(str(int(time.time())),))
+            db.commit()
+        finally:db.close()
+        with path.open("rb") as f:os.fsync(f.fileno())
+        _publish_file(path,destination)
     return {"restored":True,"destination_existed":False,"source_deleted":False,
-            "requires_operator_acceptance_before_promotion":True}
+            "requires_operator_acceptance_before_promotion":True,"payment_execution_blocked":True,
+            "recovery_quarantine":True}
 
 def recovery_drill(book):
     """A local rehearsal is evidence of recovery mechanics, not key custody."""

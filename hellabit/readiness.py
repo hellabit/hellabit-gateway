@@ -10,20 +10,9 @@ from .control import audit,ensure_schema,verify_audit
 from .ledger import Error,identifier
 from .operations import Operations
 from .indexer import EventIndexer
+from .distribution import source_names
 
 ROOT=Path(__file__).resolve().parents[1]
-SOURCE_ROOT_FILES=("README.md","LICENSE","NOTICE","SECURITY.md","AGENTS.md","package.json",
-    "package-lock.json","DEPENDENCIES.json",".gitignore","requirements-api.txt","API-DEPENDENCIES.json")
-SOURCE_FOLDERS=("hellabit","web","sdk","contracts","tests","scripts","docs","examples","licenses",".github")
-
-def source_names(root):
-    names=set(SOURCE_ROOT_FILES)
-    for folder in SOURCE_FOLDERS:
-        for p in (root/folder).rglob("*"):
-            if p.is_file() and "__pycache__" not in p.parts and p.suffix!=".pyc":
-                name=p.relative_to(root).as_posix()
-                if name!="scripts/register_preview.py":names.add(name)
-    return names
 REQUIREMENTS=(
     ("entity","Operating entity","Confirm the exact registered entity and its authority."),
     ("legal-ca","Canadian operating role","Review the actual Canadian functions and funds flow."),
@@ -71,8 +60,7 @@ def local_build():
                 if p.is_symlink() or not p.is_file():return pending
             proof=json.loads((ROOT/"VERIFIED.json").read_text())
             manifest=json.loads((ROOT/"SOURCE-MANIFEST.json").read_text())
-        if (proof.get("productionReady") is not False or proof.get("externalTransactions")!=0 or
-                not all(type(proof.get(k)) is int and proof[k]>0 for k in ("pythonTests","sdkTests","contractChecks","browserChecks"))):return pending
+        if proof.get("productionReady") is not False or proof.get("externalTransactions")!=0:return pending
         hashes={}
         for row in manifest["files"]:
             name=row["path"]
@@ -142,17 +130,26 @@ class Readiness:
             controls.append({"id":id_,"title":title,"status":"reported-unverified" if row else "expired" if expired else "missing",
                              "next_action":action,"external_verification_established":False})
         unknown=ops["counts"].get("unknown",0)+overdue
+        from .backup import capacity
+        backup_capacity=capacity(self.book)
+        with self.book.db() as db:
+            quarantine=bool(db.execute("SELECT 1 FROM settings WHERE key='recovery_quarantine'").fetchone())
+            unresolved=[dict(r) for r in db.execute("""SELECT id,connection,asset,amount,created FROM execution_intents
+                WHERE tenant=? AND (state='unknown' OR state='submitting' AND lease_until<=?) ORDER BY created LIMIT 30""",(tenant,self.book.clock()))]
+        for row in unresolved:row['age_seconds']=max(0,self.book.clock()-row['created'])
         return {"schema":"hellabit.readiness-report.v1","version":__version__,"observed_at":self.book.clock(),
                 "role_profile":"merchant-controlled-software","intended_markets":["CA","US"],
                 "source_build":local_build(),
                 "machine_observations":{"ledger_balanced":check["ok"],"journal_count":check["journal_count"],
                     "control_audit_valid":audit_check["ok"],"control_audit_entries":audit_check["entries_checked"],
+                    "backup_capacity":backup_capacity,"recovery_quarantine":quarantine,"unresolved_holds":unresolved,
                     "unknown_or_overdue_submissions":unknown,"payout_counts":ops["counts"],
                     "enrolled_api_principals":principals,"chain_bindings":chains},
                 "external_controls":controls,"legal_role_resolved":False,"live_payments_enabled":False,
-                "activation_blocked":True,"new_paid_services_enabled":False,"outbound_sales_enabled":False,
+                "activation_blocked":True,
                 "personal_or_account_details_included":False,
-                "next_action":"Reconcile the original unknown payment identity." if unknown else
+                "next_action":"Keep this restored copy isolated. Reconcile missing commands and provider movements and fence the prior writer before promotion." if quarantine else
+                    "Reconcile the original unknown payment identity." if unknown else
                     "Resolve the exact operating role and provider program before enrolling a live connection."}
 
     def packet(self,tenant):

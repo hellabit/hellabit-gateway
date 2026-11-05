@@ -267,15 +267,16 @@ class Handler(BaseHTTPRequestHandler):
                 else: raise Error("issuer_requires_attestation_and_mint")
             elif tail == "issuer/configure":
                 fields(body, ["name", "symbol", "currency"]); result = issuer.configure(tenant, **body)
-            elif tail == "issuer/attest":
+            elif tail in ("issuer/attest","issuer/attest-balance"):
                 fields(body, ["fiat_minor_units", "reference"])
                 state = issuer.state(tenant)
-                event = SandboxBank(book).event(tenant, "issuer-reserve", state["currency"], body["fiat_minor_units"], body["reference"])
-                result = issuer.attest(tenant, event)
+                purpose="issuer-reserve-balance" if tail.endswith("balance") else "issuer-reserve"
+                event = SandboxBank(book).event(tenant, purpose, state["currency"], body["fiat_minor_units"], body["reference"])
+                result = issuer.attest_balance(tenant,event) if tail.endswith("balance") else issuer.attest(tenant, event)
             elif tail in ("issuer/mint", "issuer/redeem"):
-                fields(body, ["customer", "amount", "reference"])
-                method = issuer.mint if tail.endswith("mint") else issuer.request_redemption
-                result = method(tenant, body["customer"], body["amount"], body["reference"])
+                fields(body, ["customer", "amount", "reference"],[] if tail.endswith("mint") else ["source"])
+                if tail.endswith("mint"):result=issuer.mint(tenant,body["customer"],body["amount"],body["reference"])
+                else:result=issuer.request_redemption(tenant,body["customer"],body["amount"],body["reference"],body.get("source","customer"))
             elif tail == "issuer/payout":
                 fields(body, ["redemption", "payment_reference"])
                 state = issuer.state(tenant)
@@ -288,7 +289,7 @@ class Handler(BaseHTTPRequestHandler):
                 result = Payouts(book).request(tenant, **body)
             elif tail.startswith("ops/") and tail.count("/")==2:
                 fields(body,[]);_,intent,action=tail.split("/");identifier(intent)
-                if action not in ("process","interrupt","reconcile"):raise Error("route_not_found",404)
+                if action not in ("process","interrupt","reconcile","cancel"):raise Error("route_not_found",404)
                 operations=Operations(book);operations.get(tenant,intent)
                 from .fixtures import SandboxProvider
                 def lost_reply():raise TimeoutError("Synthetic reply interrupted after acceptance")
@@ -296,6 +297,7 @@ class Handler(BaseHTTPRequestHandler):
                     after_accept=lost_reply if action=="interrupt" else None)
                 if action in ("process","interrupt"):result=operations.process_one(tenant,provider,intent=intent)
                 elif action=="reconcile":result=operations.reconcile(tenant,intent,provider)
+                elif action=="cancel":result=operations.cancel_unknown(tenant,intent,provider)
                 else:raise Error("route_not_found",404)
             elif tail=='readiness/recovery-drill':
                 fields(body,[])
