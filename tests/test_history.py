@@ -1,15 +1,46 @@
+import csv
 import hashlib
 import json
 from pathlib import Path
 import tempfile
 import unittest
-from hellabit.history import export_history
+from hellabit.fixtures import SandboxProvider
+from hellabit.history import export_history, export_payout_report
 from hellabit.ledger import Ledger,Error
 from hellabit.rails import SandboxBank
 from hellabit.operations import Operations
 from hellabit.payouts import Payouts
 
 class HistoryTests(unittest.TestCase):
+    def test_payout_report_reconciles_holds_and_returns_in_native_units(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            book = Ledger(root/"ledger.sqlite3")
+            tenant = book.create_tenant("Reporting Merchant")["tenant"]
+            SandboxBank(book).fund(tenant,"agent-01","CAD",1000,"opening")
+            quote = book.create_quote(tenant,"CAD",1000,0)["quote"]
+            book.run_report(tenant,book.reserve(tenant,"agent-01",quote,"report-work")["id"])
+            payouts, ops, provider = Payouts(book), Operations(book), SandboxProvider(root/"provider.sqlite3")
+            paid = payouts.request(tenant,"CAD",100,"private-recipient","sample-paid")
+            held = payouts.request(tenant,"CAD",50,"private-recipient","sample-held")
+            ops.process_one(tenant,provider,paid["intent"])
+            provider.return_payment(ops.get(tenant,paid["intent"])["external_key"],"return-1",20)
+            ops.reconcile(tenant,paid["intent"],provider)
+            target = root/"report.csv"
+            receipt = export_payout_report(book,tenant,target)
+            with target.open(newline="") as file:
+                rows = {r["payout_id"]:r for r in csv.DictReader(file)}
+            self.assertEqual(receipt["records"],2)
+            self.assertEqual(receipt["sha256"],hashlib.sha256(target.read_bytes()).hexdigest())
+            self.assertEqual((rows[paid["id"]]["settled_units"],rows[paid["id"]]["returned_units"],
+                              rows[paid["id"]]["net_paid_units"]),("100","20","80"))
+            self.assertEqual((rows[held["id"]]["state"],rows[held["id"]]["held_units"]),("prepared","50"))
+            self.assertEqual((rows[held["id"]]["asset"],rows[held["id"]]["decimal_places"]),("CAD","2"))
+            self.assertNotIn(b"private-recipient",target.read_bytes())
+            self.assertEqual(target.stat().st_mode&0o777,0o600)
+            with self.assertRaisesRegex(Error,"payout_report_target_exists"):
+                export_payout_report(book,tenant,target)
+
     def test_complete_consistent_history_excludes_other_workspaces_and_credentials(self):
         with tempfile.TemporaryDirectory() as tmp:
             root=Path(tmp);book=Ledger(root/"book.sqlite3")

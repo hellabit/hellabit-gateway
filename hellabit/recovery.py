@@ -67,8 +67,11 @@ def _coverage(book,external,watermarks):
                 row=_intent(db,receipt)
                 if any(type(receipt[k]) is not type(row[k]) or receipt[k]!=row[k] for k in ('request_hash','asset','amount','recipient')):
                     raise Error('recovery_command_terms_conflict',423)
+                if row['accepted_reference'] and row['accepted_reference']!=receipt['reference']:
+                    raise Error('recovery_provider_reference_conflict',423)
                 hashed.update((canonical(['receipt',receipt])+'\n').encode());counts['accepted']+=1
-        for row in db.execute("SELECT external_key FROM execution_intents WHERE state IN ('confirmed','failed')"):
+        for row in db.execute("""SELECT external_key FROM execution_intents
+            WHERE state IN ('confirmed','failed') OR accepted_reference IS NOT NULL"""):
             if not external.execute('SELECT 1 FROM accepted WHERE key=? AND rowid<=?',(row[0],watermarks['accepted'])).fetchone():
                 raise Error('recovery_provider_history_incomplete',423)
         for batch in _stream(external,'corrections','body',watermarks['corrections']):

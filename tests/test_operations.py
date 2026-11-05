@@ -65,6 +65,39 @@ class OperationsTests(unittest.TestCase):
         self.assertEqual(self.provider.accepted_count(),0)
         self.assertEqual(self.balance("payout:"+second["id"]),50)
 
+    def test_durable_acceptance_preserves_hold_and_allows_next_payout(self):
+        first = self.payout("first-accepted")
+        second = self.payout("second-accepted")
+        job = self.ops.claim(self.tenant, intent=first["intent"])
+        receipt = {**{k:job[k] for k in ("request_hash","amount","asset","recipient")},
+                   "mode":"sandbox","key":job["external_key"],"reference":"stable-accepted-id","status":"pending"}
+        self.ops.finish(self.tenant,job["id"],receipt,lease=job["lease"],source="worker")
+        self.assertIsNone(self.ops.claim(self.tenant,intent=second["intent"]))
+        accepted = self.ops.finish(self.tenant,job["id"],{**receipt,"status":"accepted"})
+        self.assertEqual((accepted["state"], self.balance("payout:"+first["id"])), ("awaiting_settlement",50))
+        self.assertEqual(self.ops.list(self.tenant)["attention"], [])
+        self.assertEqual(self.ops.finish(self.tenant,job["id"],receipt)["state"],"awaiting_settlement")
+        self.assertEqual(self.ops.process_one(self.tenant,self.provider)["intent"]["id"],second["intent"])
+        settled = {**receipt,"status":"settled"}
+        self.assertEqual(self.ops.finish(self.tenant,job["id"],settled)["state"],"confirmed")
+        self.assertTrue(self.ops.finish(self.tenant,job["id"],settled)["replayed"])
+        self.assertEqual(self.balance("payout:"+first["id"]),0)
+        self.assertTrue(self.book.reconcile(self.tenant)["ok"])
+
+    def test_reused_accepted_reference_fences_connection_and_keeps_both_holds(self):
+        first, second, third = (self.payout("duplicate-ref-"+str(i)) for i in range(3))
+        for payout in (first,second):
+            job = self.ops.claim(self.tenant,intent=payout["intent"])
+            receipt = {**{k:job[k] for k in ("request_hash","amount","asset","recipient")},
+                       "mode":"sandbox","key":job["external_key"],"reference":"duplicate-ref","status":"accepted"}
+            result = self.ops.finish(self.tenant,job["id"],receipt,lease=job["lease"],source="worker")
+        self.assertEqual((result["state"],result["last_error"]),("unknown","provider_reference_conflict"))
+        self.assertIsNone(self.ops.claim(self.tenant,intent=third["intent"]))
+        with self.assertRaisesRegex(Error,"provider_reference_conflict_requires_reconciliation"):
+            self.ops.cancel_unknown(self.tenant,second["intent"],self.provider)
+        self.assertEqual(self.balance("payout:"+first["id"]),50)
+        self.assertEqual(self.balance("payout:"+second["id"]),50)
+
     def test_process_dies_after_provider_acceptance_then_lookup_recovers_once(self):
         p = self.payout()
         code = """

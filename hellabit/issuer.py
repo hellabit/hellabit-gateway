@@ -159,53 +159,59 @@ class Issuer:
             return self._state(db,tenant)
 
     def mint(self, tenant, customer, amount, request_id):
+        with self.ledger.transaction() as db:
+            return self._mint(db, tenant, customer, amount, request_id)
+
+    def _mint(self, db, tenant, customer, amount, request_id):
         units(amount); identifier(request_id)
         request = digest(["mint", customer, amount])
-        with self.ledger.transaction() as db:
-            self.ledger.customer(db, tenant, customer)
-            old = db.execute("SELECT * FROM issuer_requests WHERE tenant=? AND id=?", (tenant, request_id)).fetchone()
-            if old:
-                if old["request_hash"] != request:
-                    raise Error("issuer_request_conflict")
-                return {"request": request_id, "replayed": True}
-            state = self._state(db, tenant)
-            if state['reserve_reconciliation_required']:
-                raise Error('reserve_reconciliation_required',423)
-            if not state["reserve_current"]:
-                raise Error("reserve_evidence_stale")
-            if amount > state["headroom"]:
-                raise Error("insufficient_attested_reserves")
-            seq = self.ledger._post(db, tenant, "issuance", request_id, state["asset"], [("issuer-liability", -amount), ("customer:" + customer, amount)])
-            db.execute("INSERT INTO issuer_requests VALUES(?,?,?,?,?)", (tenant, request_id, "mint", request, canonical({"journal": seq})))
-            return {"request": request_id, "journal": seq, "mode": "sandbox"}
+        self.ledger.customer(db, tenant, customer)
+        old = db.execute("SELECT * FROM issuer_requests WHERE tenant=? AND id=?", (tenant, request_id)).fetchone()
+        if old:
+            if old["request_hash"] != request:
+                raise Error("issuer_request_conflict")
+            return {"request": request_id, "replayed": True}
+        state = self._state(db, tenant)
+        if state['reserve_reconciliation_required']:
+            raise Error('reserve_reconciliation_required',423)
+        if not state["reserve_current"]:
+            raise Error("reserve_evidence_stale")
+        if amount > state["headroom"]:
+            raise Error("insufficient_attested_reserves")
+        seq = self.ledger._post(db, tenant, "issuance", request_id, state["asset"], [("issuer-liability", -amount), ("customer:" + customer, amount)])
+        db.execute("INSERT INTO issuer_requests VALUES(?,?,?,?,?)", (tenant, request_id, "mint", request, canonical({"journal": seq})))
+        return {"request": request_id, "journal": seq, "mode": "sandbox"}
 
     def request_redemption(self, tenant, customer, amount, request_id, source="customer"):
+        with self.ledger.transaction() as db:
+            return self._request_redemption(db, tenant, customer, amount, request_id, source)
+
+    def _request_redemption(self, db, tenant, customer, amount, request_id, source):
         units(amount); identifier(request_id)
         if amount % 10_000:
             raise Error("redemption_requires_whole_fiat_minor_units", 400)
         if source not in ("customer","merchant","platform-fees"):raise Error("invalid_redemption_source",400)
         account="customer:"+str(customer) if source=="customer" else source
         request = digest({'kind':'redemption','source':source,'account':account,'asset':'issued:'+tenant,'amount':amount})
-        with self.ledger.transaction() as db:
-            if source=="customer":self.ledger.customer(db, tenant, customer)
-            elif customer is not None:raise Error("unexpected_customer_binding",400)
-            account="customer:"+str(customer) if source=="customer" else source
-            old = db.execute("SELECT * FROM redemptions WHERE tenant=? AND id=?", (tenant, request_id)).fetchone()
-            if old:
-                expected_customer=customer if source=='customer' else source
-                legacy=digest([customer,amount]) if source=='customer' else digest([source,amount])
-                if (old['source']!=source or old['customer']!=expected_customer or old['amount']!=amount
-                        or old["request_hash"] not in (request,legacy)):
-                    raise Error("redemption_reference_conflict")
-                return {**dict(old), "replayed": True}
-            state = self._state(db, tenant)
-            available = self.ledger._balance(db, tenant, state["asset"], account)
-            if source=="customer":available-=self.ledger._held(db, tenant, state["asset"], customer)
-            if available < amount:
-                raise Error("insufficient_available_credits", 402)
-            self.ledger._post(db, tenant, "redemption-burn", request_id, state["asset"], [(account, -amount), ("issuer-liability", amount)])
-            db.execute("INSERT INTO redemptions(tenant,id,customer,amount,state,payment_reference,request_hash,source) VALUES(?,?,?,?,?,?,?,?)", (tenant, request_id, customer if source=="customer" else source, amount, "pending", None, request,source))
-            return {"request": request_id, "state": "pending", "amount": amount}
+        if source=="customer":self.ledger.customer(db, tenant, customer)
+        elif customer is not None:raise Error("unexpected_customer_binding",400)
+        account="customer:"+str(customer) if source=="customer" else source
+        old = db.execute("SELECT * FROM redemptions WHERE tenant=? AND id=?", (tenant, request_id)).fetchone()
+        if old:
+            expected_customer=customer if source=='customer' else source
+            legacy=digest([customer,amount]) if source=='customer' else digest([source,amount])
+            if (old['source']!=source or old['customer']!=expected_customer or old['amount']!=amount
+                    or old["request_hash"] not in (request,legacy)):
+                raise Error("redemption_reference_conflict")
+            return {**dict(old), "replayed": True}
+        state = self._state(db, tenant)
+        available = self.ledger._balance(db, tenant, state["asset"], account)
+        if source=="customer":available-=self.ledger._held(db, tenant, state["asset"], customer)
+        if available < amount:
+            raise Error("insufficient_available_credits", 402)
+        self.ledger._post(db, tenant, "redemption-burn", request_id, state["asset"], [(account, -amount), ("issuer-liability", amount)])
+        db.execute("INSERT INTO redemptions(tenant,id,customer,amount,state,payment_reference,request_hash,source) VALUES(?,?,?,?,?,?,?,?)", (tenant, request_id, customer if source=="customer" else source, amount, "pending", None, request,source))
+        return {"request": request_id, "state": "pending", "amount": amount}
 
     def confirm_redemption(self, tenant, request_id, bank_envelope):
         identifier(request_id)

@@ -1,5 +1,6 @@
 from __future__ import annotations
 import argparse
+import errno
 import fcntl
 import os
 from http import cookies
@@ -18,6 +19,7 @@ from .rails import SandboxBank, sandbox_usdc_funding
 from .payouts import Payouts
 from .operations import Operations
 from .readiness import Readiness
+from .console_commands import ConsoleCommands, TERMS
 from . import __version__
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -57,7 +59,26 @@ class Server(ThreadingHTTPServer):
             fcntl.flock(self.writer_lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
             Operations(book)
             Readiness(book)
-            super().__init__(("127.0.0.1", port), Handler)
+            if port is None:
+                with book.db() as db:
+                    settings = dict(db.execute("""SELECT key,value FROM settings
+                        WHERE key IN ('console_loopback_port','recovery_retired')""").fetchall())
+                saved_port = settings.get("console_loopback_port")
+                if saved_port is not None:
+                    if (not isinstance(saved_port, str) or not re.fullmatch(r"[0-9]{4,5}", saved_port)
+                            or not 1024 <= int(saved_port) <= 65535):
+                        raise Error("invalid_saved_console_port", 500)
+                port = int(saved_port) if saved_port is not None else 0
+                super().__init__(("127.0.0.1", port), Handler)
+                if saved_port is None and "recovery_retired" not in settings:
+                    try:
+                        with book.transaction() as db:
+                            db.execute("INSERT INTO settings VALUES('console_loopback_port',?)", (str(self.server_port),))
+                    except BaseException:
+                        self.server_close()
+                        raise
+            else:
+                super().__init__(("127.0.0.1", port), Handler)
         except BaseException:
             self.writer_lock.close(); raise
         self.origins = {f"http://127.0.0.1:{self.server_port}", f"http://localhost:{self.server_port}"}
@@ -181,7 +202,9 @@ class Handler(BaseHTTPRequestHandler):
                 return
             if not route.startswith(base + "/"): raise Error("route_not_found", 404)
             rest = route[len(base) + 1:].split("/"); tenant = identifier(rest[0]); tail = "/".join(rest[1:])
-            owner_only = tail.startswith("sandbox/") or tail.startswith("issuer/") or tail.startswith("enroll/") or tail.startswith("payouts") or tail.startswith("merchant-keys") or tail.startswith("ops/") or tail.startswith("readiness/") or tail in ("keys", 'diagnostics','ops','readiness')
+            owner_only = tail.startswith(("sandbox/", "issuer/", "enroll/", "payouts", "merchant-keys",
+                                          "ops/", "readiness/", "commands/")) or tail in (
+                                              "keys", "diagnostics", "ops", "readiness", "commands")
             principal = self._authorize(tenant, owner_only=owner_only)
             book, issuer = self.server.book, Issuer(self.server.book)
             if principal["role"] == "agent" and tail:
@@ -202,6 +225,14 @@ class Handler(BaseHTTPRequestHandler):
                     snapshot=book.snapshot(tenant,include_issuer=True)
                     self._reply(snapshot); return
                 if tail=='ops':self._reply(Operations(book).list(tenant));return
+                if tail.startswith("ops/") and tail.count("/")==1:
+                    self._reply(Operations(book).get(tenant, tail.split("/")[1])); return
+                if tail == "commands": self._reply(ConsoleCommands(book).list(tenant)); return
+                if tail.startswith("commands/") and tail.count("/") == 2:
+                    _, action, command_id = tail.split("/")
+                    if action not in TERMS:
+                        raise Error("route_not_found", 404)
+                    self._reply(ConsoleCommands(book).get(tenant, action, command_id)); return
                 if tail=='readiness':self._reply(Readiness(book).report(tenant));return
                 if tail=='readiness/packet':self._reply(Readiness(book).packet(tenant));return
                 if tail == "reconcile": self._reply(book.reconcile(tenant)); return
@@ -284,6 +315,17 @@ class Handler(BaseHTTPRequestHandler):
                 row = issuer.redemption(tenant,body['redemption'])
                 event = SandboxBank(book).event(tenant, "redemption:" + row["id"], state["currency"], row["amount"] // 10_000, body["payment_reference"], "debit")
                 result = issuer.confirm_redemption(tenant, row["id"], event)
+            elif tail.startswith("commands/") and tail.count("/") == 2:
+                _, action, verb = tail.split("/")
+                if action not in TERMS or verb not in ("prepare", "confirm", "discard"):
+                    raise Error("route_not_found", 404)
+                commands = ConsoleCommands(book)
+                if verb == "prepare":
+                    fields(body, ["terms", "after"], ["legacy_key"])
+                    result = commands.prepare(tenant, action, **body)
+                else:
+                    fields(body, ["id"])
+                    result = commands.finish(tenant, action, body["id"], discard=verb == "discard")
             elif tail == "payouts":
                 fields(body, ["asset", "amount", "recipient", "key"], ["source"])
                 result = Payouts(book).request(tenant, **body)
@@ -329,15 +371,25 @@ class Handler(BaseHTTPRequestHandler):
 
 def main():
     parser = argparse.ArgumentParser(description="Hellabit private sandbox console")
-    parser.add_argument("--port", type=int, default=0)
+    parser.add_argument("--port", type=int, metavar="PORT",
+                        help="Override the saved loopback port. Use 0 for a disposable address.")
     parser.add_argument("--state", type=Path, default=ROOT / ".private" / "ledger.sqlite3")
     parser.add_argument("--demo", action="store_true")
     args = parser.parse_args()
+    if args.port is not None and not 0 <= args.port <= 65535:
+        parser.error("--port must be between 0 and 65535")
     book = Ledger(args.state)
     if args.demo:
         with book.db() as db: exists = db.execute("SELECT 1 FROM tenants LIMIT 1").fetchone()
         if not exists: book.create_tenant("Example Merchant")
-    server = Server(book, args.port)
+    try:
+        server = Server(book, args.port)
+    except BlockingIOError:
+        parser.exit(1, "This ledger already has an active console. Open its existing address.\n")
+    except OSError as exc:
+        if exc.errno != errno.EADDRINUSE:
+            raise
+        parser.exit(1, "The console address is in use. Free that port or launch with an explicit --port.\n")
     print(canonical({"url": f"http://127.0.0.1:{server.server_port}", "mode": "sandbox", "live_enabled": False}), flush=True)
     try: server.serve_forever()
     except KeyboardInterrupt: pass

@@ -2,6 +2,7 @@ import json
 from pathlib import Path
 import secrets
 import tempfile
+from types import SimpleNamespace
 import unittest
 from unittest.mock import patch
 from hellabit.backup import create,restore
@@ -11,6 +12,12 @@ from hellabit.operations import Operations
 from hellabit.payouts import Payouts
 
 class BackupTests(unittest.TestCase):
+    def test_low_working_space_leaves_no_backup_target(self):
+        with patch("hellabit.backup.shutil.disk_usage", return_value=SimpleNamespace(free=1)):
+            with self.assertRaisesRegex(Error,"backup_insufficient_working_space"):
+                create(self.book,self.backup,self.key)
+        self.assertFalse(self.backup.exists())
+
     def test_oversize_snapshot_stops_before_creating_a_backup(self):
         with patch("hellabit.backup.LIMIT",4096):
             with self.assertRaisesRegex(Error,"backup_size_limit"):create(self.book,self.backup,self.key)

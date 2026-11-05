@@ -8,6 +8,9 @@ from .control import audit, ensure_schema
 from .ledger import Error, canonical, digest, identifier
 from .rails import TRANSFER
 
+MAX_BLOCK_EVENTS = 4096
+MAX_LOG_RESPONSE_BYTES = 4_000_000
+
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS chain_bindings(
  id TEXT PRIMARY KEY,tenant TEXT NOT NULL,chain_id INTEGER NOT NULL,contract TEXT NOT NULL,
@@ -76,7 +79,7 @@ class EventIndexer:
 
     def ingest(self, tenant, binding, height, block_hash, parent_hash, events):
         integer(height); block_hash, parent_hash = hash32(block_hash), hash32(parent_hash)
-        if not isinstance(events, list) or len(events) > 1000: raise Error("chain_event_limit", 400)
+        if not isinstance(events, list) or len(events) > MAX_BLOCK_EVENTS: raise Error("chain_event_limit", 400)
         normalized, ids = [], set()
         for event in events:
             if not isinstance(event, dict) or set(event) != {"tx_hash", "log_index", "from", "to", "amount"}:
@@ -248,15 +251,19 @@ class EventIndexer:
         target = min(tip, state["cursor"] + max_blocks)
         for height in range(state["cursor"] + 1, target + 1):
             block = rpc("eth_getBlockByNumber", [hex(height), False])
-            if not block or int(block.get("number", "-1"), 16) != height: raise Error("rpc_block_missing", 503)
-            logs = rpc("eth_getLogs", [{"address": state["contract"], "fromBlock": hex(height),
-                                       "toBlock": hex(height), "topics": [TRANSFER]}])
-            if not isinstance(logs, list) or len(logs) > 1000: raise Error("chain_event_limit", 400)
+            if not isinstance(block, dict) or int(block.get("number", "-1"), 16) != height:
+                raise Error("rpc_block_missing", 503)
+            block_hash = hash32(block.get("hash"))
+            logs = rpc("eth_getLogs", [{"address": state["contract"], "blockHash": block_hash,
+                                       "topics": [TRANSFER]}])
+            if not isinstance(logs, list) or len(logs) > MAX_BLOCK_EVENTS: raise Error("chain_event_limit", 400)
             events = []
             for log in logs:
+                if not isinstance(log, dict):
+                    raise Error("rpc_log_binding_mismatch", 403)
                 topics = log.get("topics")
                 if (log.get("removed") or log.get("address", "").lower() != state["contract"] or
-                        log.get("blockHash", "").lower() != block["hash"].lower() or
+                        log.get("blockHash", "").lower() != block_hash or
                         int(log.get("blockNumber", "-1"), 16) != height or
                         not isinstance(topics, list) or len(topics) != 3 or topics[0] != TRANSFER or
                         any(not re.fullmatch(r"0x0{24}[0-9a-fA-F]{40}", t) for t in topics[1:]) or
@@ -265,7 +272,7 @@ class EventIndexer:
                 events.append({"tx_hash": log["transactionHash"], "log_index": int(log["logIndex"], 16),
                                "from": "0x" + topics[1][-40:], "to": "0x" + topics[2][-40:],
                                "amount": int(log["data"], 16)})
-            self.ingest(tenant, binding, height, block["hash"], block["parentHash"], events)
+            self.ingest(tenant, binding, height, block_hash, block["parentHash"], events)
         final = rpc("eth_getBlockByNumber", ["finalized", False])
         cursor = self.state(tenant, binding)["cursor"]
         if final and state["start_block"] <= int(final["number"], 16) <= cursor:

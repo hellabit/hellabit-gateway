@@ -10,30 +10,33 @@ class Payouts:
         self.operations = Operations(ledger)
 
     def request(self, tenant, asset, amount, recipient, key, source="merchant"):
+        with self.ledger.transaction() as db:
+            return self._request(db, tenant, asset, amount, recipient, key, source)
+
+    def _request(self, db, tenant, asset, amount, recipient, key, source):
         units(amount); identifier(recipient); identifier(key)
         if source not in ("merchant", "platform-fees"):
             raise Error("invalid_payout_source", 400)
         request_hash, key_hash = digest([asset, amount, recipient, source]), digest(key)
-        with self.ledger.transaction() as db:
-            self.ledger.assert_payment_writes(db)
-            self.ledger.tenant(db, tenant)
-            if self.ledger.asset(db, tenant, asset)["rail"] not in ("bank", "usdc"):
-                raise Error("issuer_redemption_required")
-            old = db.execute("SELECT * FROM payouts WHERE tenant=? AND key_hash=?", (tenant, key_hash)).fetchone()
-            if old:
-                if old["request_hash"] != request_hash: raise Error("payout_idempotency_conflict")
-                intent=db.execute("SELECT id FROM execution_intents WHERE tenant=? AND payout=?",(tenant,old["id"])).fetchone()
-                from .outcomes import payout_view
-                return {**payout_view(db,old), "intent":intent["id"] if intent else None,"replayed": True}
-            if self.ledger._balance(db, tenant, asset, source) < amount:
-                raise Error("insufficient_payout_balance")
-            # The caller's business identity, not a random restored database row,
-            # determines the provider identity. Terms are checked separately.
-            payout = "pay_" + digest(["payout-command-v2", tenant, key_hash])[:48]
-            db.execute("INSERT INTO payouts(tenant,id,asset,amount,source,recipient,state,key_hash,request_hash,payment_reference) VALUES(?,?,?,?,?,?,?,?,?,?)", (tenant, payout, asset, amount, source, recipient, "pending", key_hash, request_hash, None))
-            self.ledger._post(db, tenant, "payout-reserved", payout, asset, [(source, -amount), ("payout:" + payout, amount)])
-            intent = self.operations.enqueue(db, tenant, payout, asset, amount, recipient)
-            return {"id": payout, "state": "pending", "amount": amount, "asset": asset, "intent": intent}
+        self.ledger.assert_payment_writes(db)
+        self.ledger.tenant(db, tenant)
+        if self.ledger.asset(db, tenant, asset)["rail"] not in ("bank", "usdc"):
+            raise Error("issuer_redemption_required")
+        old = db.execute("SELECT * FROM payouts WHERE tenant=? AND key_hash=?", (tenant, key_hash)).fetchone()
+        if old:
+            if old["request_hash"] != request_hash: raise Error("payout_idempotency_conflict")
+            intent=db.execute("SELECT id FROM execution_intents WHERE tenant=? AND payout=?",(tenant,old["id"])).fetchone()
+            from .outcomes import payout_view
+            return {**payout_view(db,old), "intent":intent["id"] if intent else None,"replayed": True}
+        if self.ledger._balance(db, tenant, asset, source) < amount:
+            raise Error("insufficient_payout_balance")
+        # The caller's business identity, not a random restored database row,
+        # determines the provider identity. Terms are checked separately.
+        payout = "pay_" + digest(["payout-command-v2", tenant, key_hash])[:48]
+        db.execute("INSERT INTO payouts(tenant,id,asset,amount,source,recipient,state,key_hash,request_hash,payment_reference) VALUES(?,?,?,?,?,?,?,?,?,?)", (tenant, payout, asset, amount, source, recipient, "pending", key_hash, request_hash, None))
+        self.ledger._post(db, tenant, "payout-reserved", payout, asset, [(source, -amount), ("payout:" + payout, amount)])
+        intent = self.operations.enqueue(db, tenant, payout, asset, amount, recipient)
+        return {"id": payout, "state": "pending", "amount": amount, "asset": asset, "intent": intent}
 
     def sandbox_confirm(self, tenant, payout, reference):
         """Legacy manual ledger exercise. Use Operations for recoverable settlement."""

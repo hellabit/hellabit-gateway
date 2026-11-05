@@ -9,6 +9,7 @@ from . import __version__
 from .control import audit,ensure_schema,verify_audit
 from .ledger import Error,identifier
 from .operations import Operations
+from .outcomes import AMBIGUOUS
 from .indexer import EventIndexer
 from .distribution import source_names
 
@@ -128,8 +129,9 @@ class Readiness:
                                   (tenant,self.book.clock())).fetchone()[0] if "api_principals" in tables else 0
             retired=bool(db.execute("SELECT 1 FROM settings WHERE key='recovery_retired'").fetchone())
             quarantine=retired or bool(db.execute("SELECT 1 FROM settings WHERE key IN ('recovery_quarantine','recovery_publish_pending')").fetchone())
-            unresolved=[dict(r) for r in db.execute("""SELECT id,connection,asset,amount,created FROM execution_intents
-                WHERE tenant=? AND (state='unknown' OR state='submitting' AND lease_until<=?) ORDER BY created LIMIT 30""",(tenant,self.book.clock()))]
+            unresolved=[dict(r) for r in db.execute(f"""SELECT id,connection,asset,amount,created FROM execution_intents
+                WHERE tenant=? AND ({AMBIGUOUS} OR state='submitting' AND lease_until<=?)
+                ORDER BY created LIMIT 30""",(tenant,self.book.clock()))]
             recovery_history={'intents':sum(ops['counts'].values()),'adjustments':db.execute('SELECT COUNT(*) FROM payment_adjustments WHERE tenant=?',(tenant,)).fetchone()[0],
                               'batch_size':BATCH,'fixed_row_limit':None}
         controls=[]

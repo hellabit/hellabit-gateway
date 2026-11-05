@@ -6,6 +6,7 @@ import json
 import os
 from pathlib import Path
 import secrets
+import shutil
 import sqlite3
 import struct
 import tempfile
@@ -45,10 +46,18 @@ def _publish_file(source,destination):
     try:os.fsync(directory)
     finally:os.close(directory)
 
-def capacity(book):
+def _working_bytes(database_bytes):
+    chunks = (database_bytes + CHUNK - 1) // CHUNK
+    return 2 * database_bytes + len(MAGIC) + 36 + 16 * chunks
+
+def capacity(book, directory=None):
     with book.db() as db:
         size=db.execute("PRAGMA page_count").fetchone()[0]*db.execute("PRAGMA page_size").fetchone()[0]
+    available=shutil.disk_usage(directory or book.path.parent).free
+    working=_working_bytes(size)
     return {"database_bytes":size,"backup_limit_bytes":LIMIT,
+            "minimum_working_bytes":working,"available_working_bytes":available,
+            "has_minimum_working_space":available>=working,
             "remaining_bytes":max(0,LIMIT-size),"status":"limit-exceeded" if size>LIMIT else "capacity-warning" if size>=LIMIT*0.8 else "within-limit"}
 
 def _cipher(key,salt):
@@ -65,6 +74,9 @@ def create(book,destination,key,timeout=10):
     if destination.exists() or destination.is_symlink():raise Error("backup_target_exists",409)
     destination.parent.mkdir(parents=True,exist_ok=True,mode=0o700)
     if type(timeout) not in (int,float) or not 0<timeout<=60:raise Error("invalid_backup_timeout",400)
+    headroom=capacity(book,destination.parent)
+    if headroom["status"]=="limit-exceeded":raise Error("backup_size_limit",413)
+    if not headroom["has_minimum_working_space"]:raise Error("backup_insufficient_working_space",507)
     started=time.monotonic()
     def progress(_status,_remaining,_total):
         if time.monotonic()-started>timeout:raise Error("backup_deadline_exceeded",503)

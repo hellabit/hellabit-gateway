@@ -19,9 +19,15 @@ key. Changing terms cannot change that identity into permission for a second
 payment. Existing identities are preserved during upgrades. Retain caller keys
 and authoritative command terms outside the database's recovery failure domain.
 
-`prepared` records a hold and intent. `submitting` records worker ownership, not
-provider acceptance. `unknown` preserves the hold. `confirmed` records an observed
-settlement under the adapter's declared policy. It does not promise irreversible
+`prepared` records a hold and intent. `submitting` records worker ownership.
+`unknown` preserves the hold and blocks new submissions on the connection.
+`awaiting_settlement` requires an `accepted` receipt for the exact original key,
+request digest, terms and durable provider reference. The hold remains while
+another command can proceed. Use `pending` for a provisional provider reply
+without that assurance. Later settlement or rejection must carry the accepted
+reference. A conflicting reference keeps the hold and blocks the connection
+for investigation. `confirmed` records an observed settlement under the
+adapter's declared policy. It does not promise irreversible
 banking finality. `failed` releases the hold only after authoritative rejection
 or a permanent no-effect close. A timeout or empty lookup is never that proof.
 

@@ -75,7 +75,7 @@ No identity realm or public certificate is enrolled by the source release.
 | Merchant | Own workspace, quote, reserve, lookup, registered run, operation/result read, funded refund | No funding, issuer, payout, principal or key-management mutation |
 | Agent | Assigned customer state, reserve, lookup, registered run and own results | Cannot reprice, refund, cross customers or inspect another workspace |
 | Read-only | Own workspace and result/operation reads | Every POST denied, including lookup POST |
-| Operator | Own workspace, payout queue and readiness reads | Signed MFA and recent auth_time required; every POST denied |
+| Operator | Own workspace, payout queue, exact payout intent and readiness reads | Signed MFA and recent auth_time required. Every POST is denied. |
 
 `GET /api/health` is unauthenticated, contains no account data and explicitly
 states that live payments are disabled. Other paths need a bearer access token.
@@ -83,6 +83,24 @@ Exact Host binding, no cookies/Origin, bounded JSON and one total body deadline,
 rejection and persistent per-principal rate limits apply. No webhook or settlement
 POST is exposed. The HMAC inbox is a backend library until an actual provider's
 authentication and event contract are enrolled.
+
+An authenticated operator can read `GET /ops` for the queue and
+`GET /ops/{intent}` for the exact intent, including its original identity and
+current outcome after any recorded return. In JavaScript, use
+`client.payouts(workspace)` and `client.payout(workspace, intentId)` with
+`getAccessToken` configured for that operator. The detail route works when the
+intent has aged out of the queue. [Evidence checks](PAYOUT-VERIFICATION.md)
+
+The loopback owner session reads the latest record for each action through
+`GET /commands`. Read a specific draft or receipt through
+`GET /commands/{action}/{id}`, including after a later draft is prepared.
+Use `POST /commands/{action}/prepare` with exact `terms` and
+`after` (the current completed or discarded draft ID, or `null` for the
+first draft). Actions are `payout`, `mint`, and `redeem`. A draft can be
+confirmed or discarded by sending its `id` to the corresponding `/confirm`
+or `/discard` route. Confirming again with the same recorded ID returns the
+original receipt. These routes require the owner session. Writes also require
+CSRF validation.
 
 Owner-only loopback routes added in 0.4: `GET /ops`, `GET /readiness`,
 `GET /readiness/packet`, `POST /ops/{intent}/process`, `/interrupt`, `/reconcile`,

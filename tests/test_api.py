@@ -273,7 +273,20 @@ class ApiTests(unittest.IsolatedAsyncioTestCase):
         self.identity.enroll(self.tenant,"reader-subject","read-only",int(time.time())+3600)
         base="/api/v1/workspaces/"+self.tenant
         self.assertEqual((await self.request("GET",base+"/ops",token=self.token("operator-subject")))[0],403)
-        self.assertEqual((await self.request("GET",base+"/ops",token=self.token("operator-subject",amr=["mfa"])))[0],200)
+        operator = self.token("operator-subject", amr=["mfa"])
+        self.assertEqual((await self.request("GET",base+"/ops",token=operator))[0],200)
+        from hellabit.payouts import Payouts
+        from hellabit.rails import SandboxBank
+        SandboxBank(self.book).fund(self.tenant, "agent-01", "CAD", 100, "ops-evidence-funding")
+        quote = self.book.create_quote(self.tenant, "CAD", 100, 0)["quote"]
+        self.book.run_report(self.tenant, self.book.reserve(self.tenant, "agent-01", quote, "ops-evidence-work")["id"])
+        payout = Payouts(self.book).request(self.tenant, "CAD", 10, "test-merchant", "ops-evidence-key")
+        path = base + "/ops/" + payout["intent"]
+        status, body = await self.request("GET", path, token=operator)
+        self.assertEqual((status, body["payout"], body["state"]), (200, payout["id"], "prepared"))
+        self.assertNotIn("lease_hash", body)
+        self.assertEqual((await self.request("POST",path+"/process",{},token=operator))[0],403)
+        self.assertEqual((await self.request("GET",path,token=self.token("reader-subject")))[0],403)
         self.assertEqual((await self.request("POST",base+"/quotes",{"asset":"CAD","amount":100,"fee":1},
                                              token=self.token("reader-subject")))[0],403)
 

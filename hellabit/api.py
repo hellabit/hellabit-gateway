@@ -124,9 +124,10 @@ class Api:
             if principal["role"]=="agent":return book.agent_state(tenant,principal["customer"])
             return book.snapshot(tenant)
         if principal["role"]=="operator":
-            if method=="GET" and tail=="ops":
+            if method=="GET" and (tail=="ops" or tail.startswith("ops/") and tail.count("/")==1):
                 from .operations import Operations
-                return Operations(book).list(tenant)
+                operations = Operations(book)
+                return operations.list(tenant) if tail=="ops" else operations.get(tenant, tail.split("/")[1])
             if method=="GET" and tail=="readiness":
                 from .readiness import Readiness
                 return Readiness(book).report(tenant)

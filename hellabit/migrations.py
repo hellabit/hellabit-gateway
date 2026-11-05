@@ -6,7 +6,7 @@ import threading
 from contextlib import closing
 from .ledger import Error,canonical,SCHEMA
 
-VERSION=8
+VERSION=11
 APPLICATION_ID=0x48424757
 _lock=threading.RLock()
 
@@ -41,6 +41,14 @@ BEGIN SELECT CASE WHEN hellabit_write_epoch_8() IS NOT 8
     THEN RAISE(ABORT, 'storage_writer_incompatible') END;
 END
 """
+WRITER_TRIGGER_V9 = WRITER_TRIGGER.replace("epoch_8() IS NOT 8", "epoch_9() IS NOT 9")
+WRITER_TRIGGER_V10 = WRITER_TRIGGER.replace("epoch_8() IS NOT 8", "epoch_10() IS NOT 10")
+WRITER_TRIGGER_V11 = WRITER_TRIGGER.replace("epoch_8() IS NOT 8", "epoch_11() IS NOT 11")
+ACCEPTANCE_SCHEMA = """
+ALTER TABLE execution_intents ADD COLUMN accepted_reference TEXT;
+CREATE INDEX intent_accepted_reference ON execution_intents(tenant,connection,accepted_reference)
+ WHERE accepted_reference IS NOT NULL;
+"""
 
 
 def fence_legacy_writers(db):
@@ -49,8 +57,11 @@ def fence_legacy_writers(db):
     tables = db.execute("SELECT name FROM sqlite_schema WHERE type='table' AND name NOT GLOB 'sqlite_*'").fetchall()
     for (table,) in tables:
         for action in ("INSERT", "UPDATE", "DELETE"):
-            trigger = f"storage_v8_{action.lower()}_{table}"
-            db.execute(WRITER_TRIGGER.format(
+            for version in (8, 9, 10):
+                legacy = f"storage_v{version}_{action.lower()}_{table}".replace('"', '""')
+                db.execute(f'DROP TRIGGER IF EXISTS "{legacy}"')
+            trigger = f"storage_v11_{action.lower()}_{table}"
+            db.execute(WRITER_TRIGGER_V11.format(
                 trigger='"' + trigger.replace('"', '""') + '"',
                 table='"' + table.replace('"', '""') + '"',
                 action=action,
@@ -87,13 +98,20 @@ def upgrade(book):
     from . import operations,identity,inbox,indexer,metering,readiness,issuer
     from .events import event_key
     from .agent_policy import SCHEMA as AGENT_POLICY_SCHEMA
+    from .console_commands import RECEIPTS_SCHEMA, SCHEMA as CONSOLE_COMMANDS_SCHEMA
     schemas={"operations":operations.SCHEMA,"identity":identity.SCHEMA,
              "provider-inbox":inbox.SCHEMA,"indexer":indexer.SCHEMA,
              "metering":metering.SCHEMA,"readiness":readiness.SCHEMA,"issuer-audit":issuer.SCHEMA,"audit-only":""}
     v6_checksum=hashlib.sha256((SCHEMA+AUDIT_SCHEMA+"".join(schemas.values())+"v6-generation-and-event-scope").encode()).hexdigest()
     v7_checksum=hashlib.sha256((v6_checksum+SCHEMA_V7+AGENT_POLICY_SCHEMA+"v7-reserve-authority-and-positions").encode()).hexdigest()
-    checksum=hashlib.sha256((v7_checksum+WRITER_TRIGGER+"v8-writer-admission").encode()).hexdigest()
-    known_checksums = {6:v6_checksum,7:v7_checksum,VERSION:checksum}
+    v8_checksum=hashlib.sha256((v7_checksum+WRITER_TRIGGER+"v8-writer-admission").encode()).hexdigest()
+    v9_checksum=hashlib.sha256((v8_checksum+CONSOLE_COMMANDS_SCHEMA+WRITER_TRIGGER_V9+
+                             "v9-console-commands").encode()).hexdigest()
+    v10_checksum=hashlib.sha256((v9_checksum+RECEIPTS_SCHEMA+WRITER_TRIGGER_V10+
+                             "v10-console-receipts").encode()).hexdigest()
+    checksum=hashlib.sha256((v10_checksum+ACCEPTANCE_SCHEMA+WRITER_TRIGGER_V11+
+                             "v11-provider-acceptance").encode()).hexdigest()
+    known_checksums = {6:v6_checksum,7:v7_checksum,8:v8_checksum,9:v9_checksum,10:v10_checksum,VERSION:checksum}
     with _lock,book.db() as db:
         db.execute("BEGIN IMMEDIATE")
         try:
@@ -172,7 +190,16 @@ def upgrade(book):
                     audit(book,db,row['tenant'],'reserve-evidence-revalidation-required','schema-v7',{'previous_valid_until':row['valid_until']})
                 db.execute('UPDATE issuer SET valid_until=0')
                 db.execute("INSERT INTO schema_migrations VALUES(?,?,?)",(7,v7_checksum,book.clock()))
+            if current<8:
+                db.execute("INSERT INTO schema_migrations VALUES(?,?,?)",(8,v8_checksum,book.clock()))
+            if current<9:
+                execute_script(db,CONSOLE_COMMANDS_SCHEMA)
+                db.execute("INSERT INTO schema_migrations VALUES(?,?,?)",(9,v9_checksum,book.clock()))
+            if current<10:
+                execute_script(db,RECEIPTS_SCHEMA)
+                db.execute("INSERT INTO schema_migrations VALUES(?,?,?)",(10,v10_checksum,book.clock()))
             if current<VERSION:
+                execute_script(db,ACCEPTANCE_SCHEMA)
                 fence_legacy_writers(db)
                 db.execute("INSERT INTO schema_migrations VALUES(?,?,?)",(VERSION,checksum,book.clock()))
                 db.execute("PRAGMA user_version="+str(VERSION));db.execute("PRAGMA application_id="+str(APPLICATION_ID))
