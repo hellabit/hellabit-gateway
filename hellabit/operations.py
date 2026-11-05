@@ -28,38 +28,22 @@ CREATE TRIGGER IF NOT EXISTS observation_no_delete BEFORE DELETE ON execution_ob
 CREATE TABLE IF NOT EXISTS payment_adjustments(
  tenant TEXT NOT NULL,intent TEXT NOT NULL,event_id TEXT NOT NULL,kind TEXT NOT NULL,
  amount INTEGER NOT NULL,reference TEXT NOT NULL,proof_hash TEXT NOT NULL,body TEXT NOT NULL,
- created INTEGER NOT NULL,PRIMARY KEY(tenant,event_id));
-CREATE TRIGGER IF NOT EXISTS payment_adjustment_no_update BEFORE UPDATE ON payment_adjustments
+ created INTEGER NOT NULL,event_key TEXT NOT NULL,connection TEXT NOT NULL,journal_reference TEXT NOT NULL,
+ PRIMARY KEY(tenant,event_key));
+CREATE TRIGGER IF NOT EXISTS payment_adjustment_v6_no_update BEFORE UPDATE ON payment_adjustments
  BEGIN SELECT RAISE(ABORT,'append_only'); END;
-CREATE TRIGGER IF NOT EXISTS payment_adjustment_no_delete BEFORE DELETE ON payment_adjustments
+CREATE TRIGGER IF NOT EXISTS payment_adjustment_v6_no_delete BEFORE DELETE ON payment_adjustments
  BEGIN SELECT RAISE(ABORT,'append_only'); END;
+CREATE INDEX IF NOT EXISTS intent_pending ON execution_intents(tenant,state,created);
+CREATE TABLE IF NOT EXISTS execution_retries(
+ tenant TEXT NOT NULL,intent TEXT NOT NULL,lookups INTEGER NOT NULL,last_lookup INTEGER NOT NULL,
+ next_lookup INTEGER NOT NULL,PRIMARY KEY(tenant,intent));
 """
 
 class Operations:
     def __init__(self, book):
         self.book = book
         ensure_schema(book, "operations", SCHEMA)
-        # Existing v0.4 identities are preserved byte-for-byte. New identities
-        # are deterministic; an upgrade must never rename an existing payment.
-        if not getattr(book,"_connection_migrated",False):
-            with book.transaction() as db:
-                if "connection" not in {r[1] for r in db.execute("PRAGMA table_info(execution_intents)")}:
-                    db.execute("ALTER TABLE execution_intents ADD COLUMN connection TEXT NOT NULL DEFAULT ''")
-                    db.execute("UPDATE execution_intents SET connection='sandbox:'||rail||':'||asset")
-                db.execute("""CREATE TRIGGER IF NOT EXISTS intent_connection_immutable
-                    BEFORE UPDATE OF connection ON execution_intents
-                    BEGIN SELECT RAISE(ABORT,'intent_connection_is_immutable'); END;""")
-            book._connection_migrated=True
-        if not getattr(book, "_payout_backfill_complete", False):
-            with book.transaction() as db:
-                rows = db.execute("""SELECT p.* FROM payouts p LEFT JOIN execution_intents e
-                    ON e.tenant=p.tenant AND e.payout=p.id
-                    WHERE p.state='pending' AND e.id IS NULL LIMIT 10001""").fetchall()
-                if len(rows) > 10000:
-                    raise Error("payout_migration_requires_bounded_batch", 423)
-                for row in rows:
-                    self.enqueue(db, row["tenant"], row["id"], row["asset"], row["amount"], row["recipient"], migrated=True)
-            book._payout_backfill_complete = True
 
     def enqueue(self, db, tenant, payout, asset, amount, recipient, migrated=False):
         rail = self.book.asset(db, tenant, asset)["rail"]
@@ -80,9 +64,10 @@ class Operations:
         audit(self.book, db, tenant, "intent-created", id_, {"state": state, "payout": payout})
         return id_
 
-    @staticmethod
-    def public(row):
-        return {k: v for k, v in dict(row).items() if k not in ("lease_hash",)}
+    def public(self,row,db=None):
+        from .outcomes import intent_view
+        if db is not None:return intent_view(db,row)
+        with self.book.db() as connection:return intent_view(connection,row)
 
     def get(self, tenant, intent):
         identifier(intent)
@@ -90,7 +75,7 @@ class Operations:
             self.book.tenant(db, tenant)
             row = db.execute("SELECT * FROM execution_intents WHERE tenant=? AND id=?", (tenant, intent)).fetchone()
             if not row: raise Error("intent_not_found", 404)
-            return self.public(row)
+            return self.public(row,db)
 
     def list(self, tenant):
         with self.book.db() as db:
@@ -100,7 +85,8 @@ class Operations:
                 created DESC,rowid DESC LIMIT 30""", (tenant,)).fetchall()
             counts = {r["state"]: r["n"] for r in db.execute(
                 "SELECT state,COUNT(*) n FROM execution_intents WHERE tenant=? GROUP BY state", (tenant,))}
-        return {"intents": [self.public(r) for r in rows], "counts": counts, "mode": "sandbox",
+            projected=[self.public(r,db) for r in rows]
+        return {"intents": projected, "counts": counts, "mode": "sandbox",
                 "live_submission_implemented": False, "observed_at": self.book.clock()}
 
     def _expire(self, db, tenant):
@@ -131,7 +117,7 @@ class Operations:
                 lease_hash=?,lease_until=?,updated=? WHERE id=?""",
                 (digest(lease), until, now, row["id"]))
             audit(self.book, db, tenant, "submission-claimed", row["id"], {"attempt": row["attempts"] + 1})
-            return {**self.public(row), "state": "submitting", "lease": lease,
+            return {**self.public(row,db), "state": "submitting", "effective_outcome":"submitting","lease": lease,
                     "attempts":row["attempts"]+1,"lease_until":until,"updated":now}
 
     def _check_claim(self,tenant,intent,lease):
@@ -176,7 +162,7 @@ class Operations:
                 raise Error("provider_receipt_binding_mismatch", 403)
             if row["state"] in ("confirmed", "failed"):
                 if row["evidence_hash"] != proof: raise Error("settlement_evidence_conflict", 409)
-                return {**self.public(row), "replayed": True}
+                return {**self.public(row,db), "replayed": True}
             if lease is not None:
                 if row["state"] != "submitting" or not hmac.compare_digest(row["lease_hash"] or "", digest(lease)):
                     raise Error("worker_fenced", 409)
@@ -257,6 +243,41 @@ class Operations:
         if receipt is None: return {**self.get(tenant, intent), "lookup": "not-found-inconclusive"}
         return self.finish(tenant, intent, receipt, source="lookup")
 
+    def tick(self,tenant,adapter,intent=None):
+        """Bounded reconciliation and progress on an unrelated eligible account."""
+        self._adapter(adapter)
+        with self.book.transaction() as db:
+            self.book.tenant(db,tenant);self.book.assert_payment_writes(db);self._expire(db,tenant)
+        if intent is not None:
+            row=self.get(tenant,intent)
+            if row['state']!='prepared':
+                result=self.reconcile(tenant,intent,adapter)
+                return {"processed":False,"reconciled_original":intent,"state":result['state'],"new_submission":False}
+            reply=self.process_one(tenant,adapter,intent=intent)
+            return {"processed":reply['processed'],"intent":intent,
+                    "state":reply['intent']['state'] if reply['processed'] else row['state']}
+        with self.book.db() as db:
+            due=db.execute("""SELECT e.id FROM execution_intents e LEFT JOIN execution_retries r
+                ON r.tenant=e.tenant AND r.intent=e.id WHERE e.tenant=? AND e.state='unknown'
+                AND COALESCE(r.next_lookup,0)<=? ORDER BY COALESCE(r.last_lookup,0),e.created,e.rowid LIMIT 1""",
+                (tenant,self.book.clock())).fetchone()
+        observation={}
+        if due:
+            try:
+                result=self.reconcile(tenant,due['id'],adapter)
+                observation={"reconciled_original":due['id'],"reconciled_state":result['state']}
+            except Error as error:observation={"reconciled_original":due['id'],"lookup_error":error.code}
+            except (OSError,TimeoutError):observation={"reconciled_original":due['id'],"lookup_error":"provider_lookup_unavailable"}
+            with self.book.transaction() as db:
+                old=db.execute("SELECT lookups FROM execution_retries WHERE tenant=? AND intent=?",(tenant,due['id'])).fetchone()
+                attempts=(old[0] if old else 0)+1;delay=min(300,2**min(attempts,9))
+                db.execute("INSERT OR REPLACE INTO execution_retries VALUES(?,?,?,?,?)",
+                           (tenant,due['id'],attempts,self.book.clock(),self.book.clock()+delay))
+        reply=self.process_one(tenant,adapter)
+        result={"processed":reply['processed'],**observation}
+        if reply['processed']:result.update({"intent":reply['intent']['id'],"state":reply['intent']['state']})
+        return result
+
     def cancel_unknown(self, tenant, intent, adapter):
         """Only an authoritative, permanent no-effect record can release a hold."""
         self._adapter(adapter)
@@ -286,23 +307,25 @@ class Operations:
                       "recipient":row["recipient"],"original_reference":row["reference"]}
             if any(type(event[k]) is not type(v) or event[k]!=v for k,v in expected.items()):
                 raise Error("adjustment_binding_mismatch",403)
+            from .events import event_key
+            identity=event_key(tenant,row['connection'],event['event_id'])
             if verified_event is not None:
                 binding=db.execute("SELECT provider FROM provider_bindings WHERE tenant=? AND rail=?",(tenant,row["rail"])).fetchone()
                 saved=db.execute("SELECT body FROM provider_inbox WHERE tenant=? AND provider=? AND id=?",(tenant,*verified_event)).fetchone()
                 if not binding or binding[0]!=verified_event[0] or not saved or json.loads(saved[0])["receipt"]!=event:
                     raise Error("verified_provider_event_required",403)
-            old=db.execute("SELECT proof_hash FROM payment_adjustments WHERE tenant=? AND event_id=?",(tenant,event["event_id"])).fetchone()
+            old=db.execute("SELECT proof_hash FROM payment_adjustments WHERE tenant=? AND event_key=?",(tenant,identity)).fetchone()
             if old:
                 if old[0]!=proof:raise Error("adjustment_identity_conflict",409)
                 return {"event":event["event_id"],"replayed":True}
             total=db.execute("SELECT COALESCE(SUM(amount),0) FROM payment_adjustments WHERE tenant=? AND intent=?",(tenant,intent)).fetchone()[0]
             if total+event["amount"]>row["amount"]:raise Error("adjustment_exceeds_payment",409)
             payout=db.execute("SELECT source FROM payouts WHERE tenant=? AND id=?",(tenant,row["payout"])).fetchone()
-            self.book.consume_rail_event(db,tenant,row["rail"],event["reference"],"payout-adjustment",proof)
-            self.book._post(db,tenant,"payout-"+event["status"],event["event_id"],row["asset"],
+            self.book.consume_rail_event(db,tenant,row["rail"],identity,"payout-adjustment",proof)
+            self.book._post(db,tenant,"payout-"+event["status"],identity,row["asset"],
                             [("clearing:"+row["rail"],-event["amount"]),(payout[0],event["amount"])],
                             {"original_intent":intent,"proof_hash":proof,"mode":"sandbox"})
-            db.execute("INSERT INTO payment_adjustments VALUES(?,?,?,?,?,?,?,?,?)",
-                       (tenant,intent,event["event_id"],event["status"],event["amount"],event["reference"],proof,canonical(event),self.book.clock()))
+            db.execute("INSERT INTO payment_adjustments VALUES(?,?,?,?,?,?,?,?,?,?,?,?)",
+                       (tenant,intent,event["event_id"],event["status"],event["amount"],event["reference"],proof,canonical(event),self.book.clock(),identity,row['connection'],identity))
             audit(self.book,db,tenant,"payout-adjusted",intent,{"event":event["event_id"],"proof_hash":proof})
-        return {"event":event["event_id"],"amount":event["amount"],"replayed":False}
+        return {"event":event["event_id"],"event_key":identity,"connection":row['connection'],"amount":event["amount"],"replayed":False}

@@ -6,7 +6,7 @@ A merchant-controlled payment operations engine for API teams: durable payout
 intent, held budgets, original-identity recovery, inspectable results and exact
 usage accounting. Free Apache-2.0 core. No Stripe dependency or compulsory fee.
 
-Version **0.5.0 is a developer pre-release**. The console moves synthetic value;
+Version **0.6.0 is a developer pre-release**. The console moves synthetic value;
 real-money submission remains blocked. Canada and the United States are intended
 markets. No bank, public-chain signer, legal issuer or customer is enrolled.
 
@@ -69,18 +69,23 @@ test USDC uses six decimals. No currency conversion is inferred.
 
 ## Recover through the full lifecycle
 
-Version 0.5 adds stable business-command payout identities, financial quarantine
-on every restore, authoritative synthetic no-effect cancellation, account-scoped
-uncertainty, and separate later-return postings. API grants can renew beyond
-their first month with versioned changes and explicit reinstatement. Encrypted
-backups stream up to 1 GiB; capacity and unresolved-hold age remain visible.
-RPC reads have one total deadline, API incidents carry redacted correlation IDs,
-and usage insertion no longer sums its entire history for each event.
+Version 0.6 carries return identities through inbox deduplication, compensating
+postings and financial exports with their exact connection scope. Payouts show
+original settlement, returned value and current net paid. CLI scheduling respects
+the selected command and advances unrelated accounts while another is unknown.
 
-Start with the [payment outcome and recovery contract](docs/CONFORMANCE.md).
-The executable cases demonstrate the synthetic implementation. Live provider
-conformance, independent writer fencing and production restore acceptance remain
-unimplemented and cannot be enabled by saving configuration or evidence.
+Storage upgrades are atomic and versioned before status, export or serving.
+Access tokens bind a specific authorization generation; revocation is checked
+again after request upload and inside financial transactions. Reserve freshness
+comes from authenticated observation time and sequence, with typed redemption
+identities separating customer balances from merchant proceeds.
+
+The [single-host handover command](docs/OPERATIONS.md) retains an intact primary's
+complete history, reconciles synthetic provider receipts and returns, fences old
+workers and requires fresh access enrollment. A lost primary still requires a
+complete independent archive. Live provider conformance, production key custody
+and production restore acceptance remain unenrolled. See the
+[payment outcome and recovery contract](docs/CONFORMANCE.md).
 
 ## Use it in your project
 

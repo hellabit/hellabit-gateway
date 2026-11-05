@@ -8,16 +8,24 @@ from .ledger import Error, canonical, digest, identifier, units
 from .rails import SandboxBank
 from .control import audit,ensure_schema
 
+SCHEMA="""
+CREATE TABLE IF NOT EXISTS bank_balance_sequence(tenant TEXT NOT NULL,account TEXT NOT NULL,
+ sequence INTEGER NOT NULL,PRIMARY KEY(tenant,account));
+CREATE TABLE IF NOT EXISTS reserve_observations(tenant TEXT NOT NULL,reference TEXT NOT NULL,
+ account TEXT NOT NULL,asset TEXT NOT NULL,balance INTEGER NOT NULL,observed_at INTEGER NOT NULL,
+ valid_until INTEGER NOT NULL,sequence INTEGER NOT NULL,proof_hash TEXT NOT NULL,
+ PRIMARY KEY(tenant,reference),UNIQUE(tenant,account,sequence));
+CREATE TRIGGER IF NOT EXISTS reserve_observation_no_update BEFORE UPDATE ON reserve_observations
+ BEGIN SELECT RAISE(ABORT,'append_only'); END;
+CREATE TRIGGER IF NOT EXISTS reserve_observation_no_delete BEFORE DELETE ON reserve_observations
+ BEGIN SELECT RAISE(ABORT,'append_only'); END;
+"""
+
 
 class Issuer:
     def __init__(self, ledger):
         self.ledger = ledger
-        ensure_schema(ledger,"issuer-audit","")
-        if not getattr(ledger,"_issuer_source_migrated",False):
-            with ledger.transaction() as db:
-                if "source" not in {r[1] for r in db.execute("PRAGMA table_info(redemptions)")}:
-                    db.execute("ALTER TABLE redemptions ADD COLUMN source TEXT NOT NULL DEFAULT 'customer'")
-            ledger._issuer_source_migrated=True
+        ensure_schema(ledger,"issuer-audit",SCHEMA)
 
     def _state(self, db, tenant):
         row = db.execute("SELECT * FROM issuer WHERE tenant=?", (tenant,)).fetchone()
@@ -71,7 +79,9 @@ class Issuer:
             self.ledger.consume_rail_event(db, tenant, "bank", reference, "issuer-reserve", request)
             db.execute("INSERT INTO reserve_proofs VALUES(?,?,?,?)", (tenant, reference, request, token_units))
             # Evidence of a new deposit cannot refresh the historical pool.
-            expiry=min(state["valid_until"],self.ledger.clock()+86400) if state["reserve"] else self.ledger.clock()+86400
+            fresh=type(proof['observed_at']) is int and self.ledger.clock()-300<=proof['observed_at']<=self.ledger.clock()+15
+            observed_expiry=proof['valid_until'] if fresh else 0
+            expiry=min(state["valid_until"],observed_expiry) if state["reserve"] else observed_expiry
             db.execute("UPDATE issuer SET reserve=reserve+?,valid_until=? WHERE tenant=?", (token_units, expiry, tenant))
             self.ledger._post(db, tenant, "reserve-attestation", reference, state["currency"], [("reserve-bank", amount), ("reserve-source", -amount)], {"proof_hash": request, "mode": "sandbox"})
             return self._state(db, tenant)
@@ -81,11 +91,22 @@ class Issuer:
         with self.ledger.transaction() as db:
             self.ledger.assert_payment_writes(db)
             state=self._state(db,tenant)
-            amount=units(bank_envelope.get("body",{}).get("amount"))
-            proof=SandboxBank(self.ledger).verify(bank_envelope,tenant,"issuer-reserve-balance",state["currency"],amount)
-            if amount*10000!=state["reserve"]:raise Error("reserve_balance_mismatch",409)
-            self.ledger.consume_rail_event(db,tenant,"bank",proof["reference"],"reserve-balance",proof["proof_hash"])
-            db.execute("UPDATE issuer SET valid_until=? WHERE tenant=?",(self.ledger.clock()+86400,tenant))
+            bank=SandboxBank(self.ledger)
+            claimed=bank_envelope.get('body',{}).get('balance') if isinstance(bank_envelope,dict) else None
+            proof=bank.verify_balance(bank_envelope,tenant,state['currency'],claimed,fresh=False)
+            old=db.execute('SELECT proof_hash FROM reserve_observations WHERE tenant=? AND reference=?',(tenant,proof['reference'])).fetchone()
+            if old:
+                if old[0]!=proof['proof_hash']:raise Error('reserve_observation_conflict',409)
+                return {**state,'replayed':True}
+            bank.verify_balance(bank_envelope,tenant,state['currency'],state['reserve']//10000)
+            sequence=db.execute('SELECT COALESCE(MAX(sequence),0) FROM reserve_observations WHERE tenant=? AND account=?',(tenant,proof['account'])).fetchone()[0]
+            if proof['sequence']<=sequence:raise Error('reserve_observation_out_of_order',409)
+            from .events import event_key
+            reference=event_key(tenant,proof['account'],proof['reference'],'reserve-balance')
+            self.ledger.consume_rail_event(db,tenant,"bank",reference,"reserve-balance",proof["proof_hash"])
+            db.execute('INSERT INTO reserve_observations VALUES(?,?,?,?,?,?,?,?,?)',
+                       tuple(proof[k] for k in ('workspace','reference','account','asset','balance','observed_at','valid_until','sequence','proof_hash')))
+            db.execute("UPDATE issuer SET valid_until=? WHERE tenant=?",(proof['valid_until'],tenant))
             audit(self.ledger,db,tenant,"reserve-balance-attested",proof["reference"],{"balance":state["reserve"],"mode":"sandbox"})
         return self.state(tenant)
 
@@ -113,14 +134,18 @@ class Issuer:
         if amount % 10_000:
             raise Error("redemption_requires_whole_fiat_minor_units", 400)
         if source not in ("customer","merchant","platform-fees"):raise Error("invalid_redemption_source",400)
-        request = digest([customer, amount]) if source=="customer" else digest([source,amount])
+        account="customer:"+str(customer) if source=="customer" else source
+        request = digest({'kind':'redemption','source':source,'account':account,'asset':'issued:'+tenant,'amount':amount})
         with self.ledger.transaction() as db:
             if source=="customer":self.ledger.customer(db, tenant, customer)
             elif customer is not None:raise Error("unexpected_customer_binding",400)
-            account="customer:"+customer if source=="customer" else source
+            account="customer:"+str(customer) if source=="customer" else source
             old = db.execute("SELECT * FROM redemptions WHERE tenant=? AND id=?", (tenant, request_id)).fetchone()
             if old:
-                if old["request_hash"] != request:
+                expected_customer=customer if source=='customer' else source
+                legacy=digest([customer,amount]) if source=='customer' else digest([source,amount])
+                if (old['source']!=source or old['customer']!=expected_customer or old['amount']!=amount
+                        or old["request_hash"] not in (request,legacy)):
                     raise Error("redemption_reference_conflict")
                 return {**dict(old), "replayed": True}
             state = self._state(db, tenant)

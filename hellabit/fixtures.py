@@ -4,6 +4,7 @@ import json
 import os
 from pathlib import Path
 import sqlite3
+import secrets
 from .ledger import Error, canonical, digest
 
 class SandboxProvider:
@@ -17,6 +18,9 @@ class SandboxProvider:
         with self.db() as db:
             db.execute("CREATE TABLE IF NOT EXISTS accepted(key TEXT PRIMARY KEY,request_hash TEXT NOT NULL,receipt TEXT NOT NULL)")
             db.execute("CREATE TABLE IF NOT EXISTS corrections(key TEXT NOT NULL,event_id TEXT PRIMARY KEY,body TEXT NOT NULL)")
+            db.execute("CREATE TABLE IF NOT EXISTS writer_authority(id INTEGER PRIMARY KEY CHECK(id=1),generation TEXT NOT NULL)")
+            db.execute("INSERT OR IGNORE INTO writer_authority VALUES(1,?)",(secrets.token_hex(24),))
+            self.generation=db.execute('SELECT generation FROM writer_authority WHERE id=1').fetchone()[0]
         os.chmod(self.path, 0o600)
 
     def db(self):
@@ -35,6 +39,7 @@ class SandboxProvider:
                    "amount": job["amount"], "asset": job["asset"], "recipient": job["recipient"]}
         with self.db() as db:
             db.execute("BEGIN IMMEDIATE")
+            self._writer(db)
             old = db.execute("SELECT * FROM accepted WHERE key=?", (job["external_key"],)).fetchone()
             if old and old["request_hash"] != job["request_hash"]:
                 db.rollback(); raise Error("provider_idempotency_conflict")
@@ -57,6 +62,7 @@ class SandboxProvider:
                  "amount":job["amount"],"asset":job["asset"],"recipient":job["recipient"]}
         with self.db() as db:
             db.execute("BEGIN IMMEDIATE")
+            self._writer(db)
             old=db.execute("SELECT request_hash,receipt FROM accepted WHERE key=?",(job["external_key"],)).fetchone()
             if old and old[0]!=job["request_hash"]:raise Error("provider_idempotency_conflict")
             if old:receipt=json.loads(old[1])
@@ -81,3 +87,20 @@ class SandboxProvider:
     def adjustments(self,key):
         with self.db() as db:
             return [json.loads(r[0]) for r in db.execute("SELECT body FROM corrections WHERE key=? ORDER BY rowid",(key,))]
+
+    def _writer(self,db):
+        if db.execute('SELECT generation FROM writer_authority WHERE id=1').fetchone()[0]!=self.generation:
+            raise Error('provider_writer_fenced',423)
+
+    def recovery_history(self,fence=False):
+        """Complete synthetic history; never a declaration about a real bank."""
+        with self.db() as db:
+            db.execute('BEGIN IMMEDIATE')
+            if fence:
+                self._writer(db)
+                db.execute('UPDATE writer_authority SET generation=? WHERE id=1',(secrets.token_hex(24),))
+            receipts=[json.loads(r[0]) for r in db.execute('SELECT receipt FROM accepted ORDER BY rowid LIMIT 10001')]
+            corrections=[json.loads(r[0]) for r in db.execute('SELECT body FROM corrections ORDER BY rowid LIMIT 10001')]
+            if len(receipts)>10000 or len(corrections)>10000:raise Error('recovery_history_exceeds_bound',423)
+            db.commit()
+        return {'mode':'sandbox','retention':'complete-independent-fixture-store','receipts':receipts,'corrections':corrections}

@@ -23,7 +23,8 @@ class Payouts:
             if old:
                 if old["request_hash"] != request_hash: raise Error("payout_idempotency_conflict")
                 intent=db.execute("SELECT id FROM execution_intents WHERE tenant=? AND payout=?",(tenant,old["id"])).fetchone()
-                return {**dict(old), "intent":intent["id"] if intent else None,"replayed": True}
+                from .outcomes import payout_view
+                return {**payout_view(db,old), "intent":intent["id"] if intent else None,"replayed": True}
             if self.ledger._balance(db, tenant, asset, source) < amount:
                 raise Error("insufficient_payout_balance")
             # The caller's business identity, not a random restored database row,

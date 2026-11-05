@@ -5,12 +5,31 @@ import re
 import tempfile
 import threading
 import unittest
+from unittest.mock import patch
 
 from hellabit.ledger import Ledger, Error
-from hellabit.server import Server
+from hellabit.server import Server,Handler
 
 
 class HttpTests(unittest.TestCase):
+    def test_key_revocation_during_upload_or_after_admission_prevents_reservation(self):
+        from hellabit.rails import SandboxBank
+        SandboxBank(self.book).fund(self.tenant,'agent-01','CAD',500,'upload-guard-funding')
+        quote=self.book.create_quote(self.tenant,'CAD',100,1)['quote']
+        for phase in ('upload','financial-transaction'):
+            key=self.book.issue_merchant_key(self.tenant)
+            def revoke():
+                thread=threading.Thread(target=lambda:self.book.revoke_merchant_key(self.tenant,key['id']))
+                thread.start();thread.join(timeout=3);self.assertFalse(thread.is_alive())
+            original_body=Handler._body;original_reserve=self.book.reserve
+            def body(handler):revoke();return original_body(handler)
+            def reserve(*args,**kwargs):revoke();return original_reserve(*args,**kwargs)
+            context=patch.object(Handler,'_body',body) if phase=='upload' else patch.object(self.book,'reserve',side_effect=reserve)
+            with context:
+                status,_,_=self.request('POST',self.base+'/operations',{'customer':'agent-01','quote':quote,'key':'revoked-'+phase},{'Authorization':'Bearer '+key['api_key']})
+            self.assertEqual(status,401)
+        with self.book.db() as db:self.assertEqual(db.execute('SELECT COUNT(*) FROM operations').fetchone()[0],0)
+
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
         self.book = Ledger(Path(self.tmp.name) / "ledger.sqlite3")

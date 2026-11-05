@@ -45,7 +45,7 @@ class CoreTests(unittest.TestCase):
         return self.book.reserve(self.tenant, "agent-01", self.quote(), key)["id"]
 
     def attest(self, amount=100):
-        event = self.bank.event(self.tenant, "issuer-reserve", "USD", amount, "reserve-1")
+        event = self.bank.deposit_event(self.tenant, "issuer-reserve", "USD", amount, "reserve-1")
         return self.issuer.attest(self.tenant, event)
 
     def test_keys_are_hashed_and_scoped(self):
@@ -221,7 +221,7 @@ class CoreTests(unittest.TestCase):
 
     def test_white_label_identity_freezes_when_used(self):
         self.issuer.configure(self.tenant, "Example CAD Dollar", "EXCAD", "CAD")
-        e = self.bank.event(self.tenant, "issuer-reserve", "CAD", 100, "reserve-cad")
+        e = self.bank.deposit_event(self.tenant, "issuer-reserve", "CAD", 100, "reserve-cad")
         self.issuer.attest(self.tenant, e)
         self.fails("issuer_identity_already_in_use", self.issuer.configure, self.tenant, "Other Name", "OTHER", "USD")
 
