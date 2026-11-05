@@ -1,7 +1,7 @@
 {
-  "schema": "hellabit.payout-evidence.v1",
+  "schema": "hellabit.payout-evidence.v2",
   "environment": "synthetic",
-  "revision": "sample-v1",
+  "revision": "sample-v2",
   "command": {
     "scope": "example-cad-test",
     "reference": "invoice-82-payout",
@@ -46,5 +46,48 @@
         "amount_units": 600
       }
     ]
+  },
+  "run": {
+    "id": "sample-run-1",
+    "profile": "settled-after-lost-reply.v1",
+    "started_at_ms": 1764547200000,
+    "interrupted_at_ms": 1764547200090,
+    "deadline_ms": 5000
+  },
+  "application": {
+    "before": {
+      "command": {
+        "scope": "example-cad-test",
+        "reference": "invoice-82-payout",
+        "key": "invoice-82-attempt",
+        "asset": "CAD",
+        "recipient_ref": "recipient-test-05",
+        "amount_units": 2800
+      },
+      "intent_id": "sample-intent-82",
+      "state": "unknown",
+      "payment_id": null,
+      "held_units": 2800,
+      "settled_units": 0,
+      "returned_units": 0,
+      "observed_at_ms": 1764547200100
+    },
+    "after": {
+      "command": {
+        "scope": "example-cad-test",
+        "reference": "invoice-82-payout",
+        "key": "invoice-82-attempt",
+        "asset": "CAD",
+        "recipient_ref": "recipient-test-05",
+        "amount_units": 2800
+      },
+      "intent_id": "sample-intent-82",
+      "state": "confirmed",
+      "payment_id": "test-payment-2001",
+      "held_units": 0,
+      "settled_units": 2800,
+      "returned_units": 600,
+      "observed_at_ms": 1764547200250
+    }
   }
 }

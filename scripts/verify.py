@@ -189,6 +189,10 @@ def main():
         receipt["contractChecks"] = len(contracts["checks"])
         output = run("sdk", [node, "--test", "tests/sdk.test.mjs"], env)
         receipt["sdkTests"] = int(re.search(r"\btests (\d+)", output).group(1))
+        probe = json.loads(run("payout-recovery-probe", [api_python, "scripts/verify_payout.py"], env))
+        if not probe["executed_local_sandbox"] or probe["application_recovery_verdict"] != "pass":
+            raise RuntimeError("Persistent payout recovery proof failed")
+        receipt["payoutRecoveryProbeVerified"] = True
         if not args.skip_browser:
             print(json.dumps({"stage": "desktop-mobile-journeys"}), flush=True)
             browser_env = dict(env)
@@ -229,6 +233,15 @@ def main():
             unpacked = Path(tmp)
             with zipfile.ZipFile(io.BytesIO(archive_data)) as capsule: capsule.extractall(unpacked)
             portable_env = {**env, "PYTHONPATH": str(unpacked)}
+            types = subprocess.run(
+                [node, str(ROOT / "node_modules/typescript/lib/tsc.js"), "--strict",
+                 "--module", "nodenext", "--noEmit", "tests/sdk-consumer.mts"],
+                cwd=unpacked, env=portable_env, capture_output=True, text=True, timeout=45,
+            )
+            (EVIDENCE / "sdk-types.log").write_text(types.stdout + types.stderr)
+            if types.returncode:
+                raise RuntimeError("Packaged SDK types failed; see evidence/sdk-types.log")
+            receipt["sdkTypesVerified"] = True
             smoke = """from pathlib import Path
 import tempfile
 from hellabit.ledger import Ledger

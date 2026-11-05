@@ -9,7 +9,7 @@ original-identity recovery and exact usage accounting. Export a payout
 reconciliation CSV with held, settled, returned and net paid amounts in their
 native units. [Payout report command](docs/OPERATIONS.md#export-the-complete-financial-record)
 
-Version **0.9.0 is a developer preview**. The console moves synthetic value;
+Version **0.9.1 is a developer preview**. The console moves synthetic value;
 real-money submission remains blocked. Canada and the United States are intended
 markets. No bank, public-chain signer, legal issuer or customer is enrolled.
 
@@ -19,10 +19,11 @@ markets. No bank, public-chain signer, legal issuer or customer is enrolled.
 python3 scripts/verify_payout.py
 ```
 
-The sample loses the reply to a CAD 28.00 payout, finds one original settlement
-and shows a CAD 6.00 return. To check your own test workflow, give the command a
-bounded evidence file with `--evidence PATH`. It reads your records without
-creating a gateway ledger or calling a provider. [Evidence format and CI use](docs/PAYOUT-VERIFICATION.md)
+The local exercise uses a disposable ledger and synthetic provider. It loses the
+reply to a CAD 28.00 payout, reopens the ledger to check the hold, recovers the
+original settlement and records a CAD 6.00 return. To check your own test
+workflow, pass a bounded evidence file with `--evidence PATH`. The report
+separates provider identity from application recovery. [Evidence format and CI use](docs/PAYOUT-VERIFICATION.md)
 
 ## Run the sandbox console
 
@@ -147,14 +148,17 @@ checkpoint key identifies source content; it is not a settlement authority.
 Hosted Linux verification is a separate GitHub Actions result. Its disposable
 Python environment builds checksum-pinned SQLite 3.54.1 from official source.
 
-## Inbound business, with a useful free core
+## Verification for an existing payout workflow
 
-Self-hosting stays free. Teams wanting the supported configuration operated for
-them can [request a managed-deployment discussion](mailto:a@epv.ai?subject=Hellabit%20managed%20deployment).
-Include the use case, intended jurisdiction, existing settlement provider and
-approximate volume. Do not send credentials, account numbers or customer data.
-Availability, responsibilities and price require an agreement; no paid service
-or automatic collection is activated by this repository.
+The verifier stays free. For help setting up a regression check, identify one
+test payout flow, its provider profile and the failure you need to exercise.
+Agree on the capture, expected accounting outcome and deadline before work
+starts. The resulting evidence and CI check belong with your application.
+Share a synthetic reproduction when you enquire.
+[Discuss payout verification](mailto:a@epv.ai?subject=Hellabit%20payout%20verification)
+
+Managed gateway deployment is a separate engagement with its own operating
+scope and agreement. [Discuss deployment](mailto:a@epv.ai?subject=Hellabit%20managed%20deployment)
 
 [Report a reproducible integration problem](https://github.com/hellabit/hellabit-gateway/issues/new/choose)
 or contribute a narrowly scoped improvement. Private security reports go to

@@ -301,10 +301,9 @@ class Handler(BaseHTTPRequestHandler):
                 fields(body, ["name", "symbol", "currency"]); result = issuer.configure(tenant, **body)
             elif tail in ("issuer/attest","issuer/attest-balance"):
                 fields(body, ["fiat_minor_units", "reference"])
-                state = issuer.state(tenant)
-                bank=SandboxBank(book)
-                event = bank.balance_event(tenant,state['currency'],body['fiat_minor_units'],body['reference']) if tail.endswith('balance') else bank.deposit_event(tenant,'issuer-reserve',state['currency'],body['fiat_minor_units'],body['reference'])
-                result = issuer.attest_balance(tenant,event) if tail.endswith("balance") else issuer.attest(tenant, event)
+                result = issuer.record_sandbox_reserve(
+                    tenant, body["fiat_minor_units"], body["reference"], balance=tail.endswith("balance"),
+                )
             elif tail in ("issuer/mint", "issuer/redeem"):
                 fields(body, ["customer", "amount", "reference"],[] if tail.endswith("mint") else ["source"])
                 if tail.endswith("mint"):result=issuer.mint(tenant,body["customer"],body["amount"],body["reference"])

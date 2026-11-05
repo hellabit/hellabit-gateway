@@ -575,7 +575,7 @@ function renderRecovery(){
     const status=conflict?'Provider reference conflict · Hold preserved':unknown?'Outcome unknown · Hold preserved':accepted?'Accepted · Awaiting settlement':row.state==='submitting'?'Submission in progress':'Prepared · Hold reserved';
     let action='<p class="fine-print">The hold stays reserved while the worker owns this attempt.</p>';
     if(conflict){
-      action='<p class="fine-print">Compare the original reference and provider records before resuming this connection.</p>';
+      action='<p class="fine-print">Export a reference case with the operator guide. The hold stays in place while any provider reference is unresolved.</p>';
     }else if(unknown||accepted){
       action=`<button class="secondary" data-intent="${id}" data-intent-action="reconcile">Check original payment ↗</button>`;
       if(unknown) action+=`<details><summary>Close without settlement</summary><p class="fine-print">The test provider must prevent a later send before this can release the hold. If it already accepted the original, that payment is recovered instead.</p><button class="quiet" data-intent="${id}" data-intent-action="cancel">Close if never accepted</button></details>`;

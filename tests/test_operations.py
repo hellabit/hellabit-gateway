@@ -98,6 +98,56 @@ class OperationsTests(unittest.TestCase):
         self.assertEqual(self.balance("payout:"+first["id"]),50)
         self.assertEqual(self.balance("payout:"+second["id"]),50)
 
+    def test_reference_conflict_requires_a_case_review_before_applying_original_settlement(self):
+        from hellabit.inbox import ProviderInbox
+        from hellabit.ledger import canonical
+
+        provider = SandboxProvider.for_ledger(self.book)
+        payout = self.payout("reviewed-payment")
+        intent = payout["intent"]
+        job = self.ops.claim(self.tenant, intent=intent)
+        receipt = provider.submit(job)
+        self.ops.finish(self.tenant,intent,{**receipt,"status":"accepted"},lease=job["lease"],source="worker")
+        self.ops.finish(self.tenant,intent,{**receipt,"reference":"unmatched-reference"})
+        with self.assertRaisesRegex(Error,"provider_reference_conflict"):
+            self.ops.reconcile(self.tenant,intent,provider)
+        case = self.ops.inspect_reference_conflict(self.tenant,intent)
+        self.assertTrue(case["resolution_available"])
+        secret = b"sandbox-operator-test-key" * 2
+        inbox = ProviderInbox(self.book,"test-bank",secret)
+        inbox.bind(self.tenant,"bank")
+        event = canonical({"id":"later-test-event","tenant":self.tenant,"occurred":self.now,
+                           "receipt":{**receipt,"reference":"later-unmatched-reference"}}).encode()
+        timestamp = str(self.now)
+        inbox.receive(self.tenant,event,timestamp,inbox.signature(secret,timestamp,event))
+        with self.assertRaisesRegex(Error,"provider_reference_review_case_changed"):
+            self.ops.resolve_reference_conflict(self.tenant,intent,case["case_sha256"],"operator-1")
+        case = self.ops.inspect_reference_conflict(self.tenant,intent)
+        self.assertIn("later-unmatched-reference",{row["reference"] for row in case["references"]})
+        result = self.ops.resolve_reference_conflict(self.tenant,intent,case["case_sha256"],"operator-1")
+        self.assertEqual((result["state"],result["net_paid_units"]),("confirmed",50))
+        self.assertEqual(self.balance("payout:"+payout["id"]),0)
+        replay = self.ops.resolve_reference_conflict(self.tenant,intent,case["case_sha256"],"operator-1")
+        self.assertTrue(replay["replayed"])
+        with self.book.db() as db:
+            self.assertEqual(db.execute("SELECT COUNT(*) FROM execution_observations WHERE intent=?",(intent,)).fetchone()[0],3)
+            self.assertEqual(db.execute("SELECT COUNT(*) FROM control_audit WHERE kind='provider-reference-reviewed'").fetchone()[0],1)
+
+    def test_reference_case_retains_hold_if_a_competing_reference_exists_in_provider_store(self):
+        provider = SandboxProvider.for_ledger(self.book)
+        earlier = self.payout("other-settled")
+        other = self.ops.process_one(self.tenant,provider,earlier["intent"])["intent"]
+        payout = self.payout("competing-payment")
+        job = self.ops.claim(self.tenant, intent=payout["intent"])
+        receipt = provider.submit(job)
+        self.ops.finish(self.tenant,job["id"],{**receipt,"status":"accepted"},lease=job["lease"],source="worker")
+        self.ops.finish(self.tenant,job["id"],{**receipt,"reference":other["reference"]})
+        case = self.ops.inspect_reference_conflict(self.tenant,job["id"])
+        self.assertFalse(case["resolution_available"])
+        with self.assertRaisesRegex(Error,"provider_reference_review_inconclusive"):
+            self.ops.resolve_reference_conflict(self.tenant,job["id"],case["case_sha256"],"operator-1")
+        self.assertEqual(self.balance("payout:"+payout["id"]),50)
+
     def test_process_dies_after_provider_acceptance_then_lookup_recovers_once(self):
         p = self.payout()
         code = """
