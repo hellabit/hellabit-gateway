@@ -62,6 +62,12 @@ class UsageMeter:
     def current_period(self):
         return datetime.fromtimestamp(self.book.clock(), timezone.utc).strftime("%Y-%m")
 
+    def _activation_period(self, db, tenant, plan):
+        activation = db.execute("""SELECT created FROM control_audit
+            WHERE tenant=? AND kind='billing-plan-recorded' AND subject=? ORDER BY seq LIMIT 1""",
+            (tenant, plan)).fetchone()
+        return datetime.fromtimestamp(activation["created"], timezone.utc).strftime("%Y-%m") if activation else None
+
     def configure(self, tenant, plan, currency, rate_micro, base_minor=0):
         identifier(plan); units(rate_micro, zero=True); units(base_minor, zero=True)
         if currency not in ("CAD", "USD"): raise Error("billing_currency_not_supported", 400)
@@ -89,9 +95,16 @@ class UsageMeter:
                 return {"period":old["period"],"quantity":old["quantity"],"micro":old["micro"],"replayed":True}
             terms = db.execute("SELECT * FROM billing_plans WHERE tenant=? AND id=?", (tenant,plan)).fetchone()
             if not terms: raise Error("billing_plan_not_found", 404)
-            month = self.current_period()
+            observed_at = self.book.clock()
+            month = datetime.fromtimestamp(observed_at, timezone.utc).strftime("%Y-%m")
             if db.execute("SELECT 1 FROM usage_invoices WHERE tenant=? AND plan=? AND period>=?", (tenant,plan,month)).fetchone():
                 raise Error("billing_period_already_closed", 409)
+            if terms["base_minor"]:
+                activation = self._activation_period(db, tenant, plan)
+                if activation is None:
+                    raise Error("billing_plan_activation_unknown")
+                if month < activation:
+                    raise Error("usage_before_plan_activation")
             amount = terms["rate_micro"] * quantity
             row=db.execute("SELECT micro FROM usage_totals WHERE tenant=? AND plan=? AND period=?",(tenant,plan,month)).fetchone()
             total=row[0] if row else 0
@@ -99,7 +112,7 @@ class UsageMeter:
             capacity=(MAX_INVOICE_MINOR-terms["base_minor"])*MICRO_PER_MINOR
             if amount+total>capacity:raise Error("usage_amount_limit",409)
             db.execute("INSERT INTO usage_events VALUES(?,?,?,?,?,?,?,?)",
-                       (tenant,key_hash,plan,month,quantity,amount,request_hash,self.book.clock()))
+                       (tenant,key_hash,plan,month,quantity,amount,request_hash,observed_at))
         return {"period":month,"quantity":quantity,"micro":amount,"replayed":False,"collection_enabled":False}
 
     def _preview(self, db, tenant, plan, month):
@@ -111,9 +124,13 @@ class UsageMeter:
         row=db.execute("SELECT micro FROM usage_totals WHERE tenant=? AND plan=? AND period=?",(tenant,plan,month)).fetchone()
         total=row[0] if row else 0
         minor, remainder = divmod(total + carry, MICRO_PER_MINOR)
-        due=minor+terms["base_minor"]
+        activation = self._activation_period(db, tenant, plan) if terms["base_minor"] else None
+        preactivation_usage = bool(activation and month < activation and row)
+        base = 0 if activation and month < activation else terms["base_minor"]
+        due=minor+base
         return {"currency":terms["currency"],"period":month,"usage_micro":total,"opening_carry_micro":carry,
-                "usage_minor":minor,"base_minor":terms["base_minor"],"due_minor":due,
+                "usage_minor":minor,"base_minor":base,"due_minor":due,
+                "preactivation_usage_requires_exact_approval":preactivation_usage,
                 "legacy_overage_requires_exact_approval":due>MAX_INVOICE_MINOR,
                 "closing_carry_micro":remainder,"collection_enabled":False,"native_decimals":2}
 
@@ -123,11 +140,7 @@ class UsageMeter:
             self.book.tenant(db, tenant)
             return self._preview(db,tenant,plan,month)
 
-    def _next_base_period(self,db,tenant,plan):
-        activation=db.execute("""SELECT created FROM control_audit
-            WHERE tenant=? AND kind='billing-plan-recorded' AND subject=? ORDER BY seq LIMIT 1""",(tenant,plan)).fetchone()
-        if not activation:raise Error('billing_plan_activation_unknown',409)
-        month=datetime.fromtimestamp(activation['created'],timezone.utc).strftime('%Y-%m')
+    def _next_base_period(self,db,tenant,plan,month):
         for invoice in db.execute("""SELECT period FROM usage_invoices WHERE tenant=? AND plan=?
             AND period>=? ORDER BY period""",(tenant,plan,month)):
             if invoice['period']!=month:break
@@ -146,17 +159,25 @@ class UsageMeter:
             latest = db.execute("SELECT MAX(period) FROM usage_invoices WHERE tenant=? AND plan=?", (tenant,plan)).fetchone()[0]
             terms=db.execute('SELECT base_minor FROM billing_plans WHERE tenant=? AND id=?',(tenant,plan)).fetchone()
             if not terms:raise Error('billing_plan_not_found',404)
-            if terms['base_minor']:
-                next_month=self._next_base_period(db,tenant,plan)
+            quote = self._preview(db,tenant,plan,month)
+            preactivation = quote["preactivation_usage_requires_exact_approval"]
+            if terms['base_minor'] and not preactivation:
+                activation = self._activation_period(db, tenant, plan)
+                if activation is None:raise Error("billing_plan_activation_unknown")
+                next_month=self._next_base_period(db,tenant,plan,activation)
                 if month<next_month:raise Error("billing_period_out_of_order",409)
                 if month>next_month:raise Error("earlier_base_period_must_close_first",409)
+            elif preactivation:
+                if latest and month <= latest:
+                    raise Error("legacy_billing_gap_requires_reconciliation")
+                if expected_due_minor is None:
+                    raise Error("preactivation_usage_requires_exact_approval")
             elif latest and month <= latest:
                 raise Error("billing_period_out_of_order", 409)
             # Never skip unbilled earlier usage when advancing the carry.
             first = db.execute("""SELECT MIN(period) FROM usage_events WHERE tenant=? AND plan=?
                 AND period>? AND period<?""", (tenant,plan,latest or "",month)).fetchone()[0]
             if first: raise Error("earlier_usage_period_must_close_first", 409)
-            quote = self._preview(db,tenant,plan,month)
             authoritative=db.execute("SELECT COALESCE(SUM(micro),0) FROM usage_events WHERE tenant=? AND plan=? AND period=?",
                                      (tenant,plan,month)).fetchone()[0]
             if authoritative!=quote["usage_micro"]:raise Error("usage_total_mismatch",409)
@@ -175,5 +196,6 @@ class UsageMeter:
                  quote["usage_minor"],quote["base_minor"],quote["due_minor"],quote["closing_carry_micro"],self.book.clock()))
             audit(self.book, db, tenant, "usage-invoice-recorded", id_,
                   {"period":month,"collection_enabled":False,
+                   "preactivation_usage":preactivation,
                    "legacy_overage_approved":quote['legacy_overage_requires_exact_approval']})
         return {"id":id_,**quote,"replayed":False}

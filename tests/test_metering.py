@@ -8,6 +8,27 @@ from hellabit.metering import UsageMeter
 def stamp(month):return int(datetime(2026,month,15,tzinfo=timezone.utc).timestamp())
 
 class MeterTests(unittest.TestCase):
+    def test_clock_rollback_and_legacy_usage_cannot_deadlock_base_invoices(self):
+        self.now = int(datetime(2026,12,1,tzinfo=timezone.utc).timestamp()) + 10
+        self.meter.configure(self.tenant,"base-boundary","USD",15000,base_minor=500)
+        self.now -= 20
+        with self.assertRaisesRegex(Error,"usage_before_plan_activation"):
+            self.meter.record(self.tenant,"base-boundary","rollback")
+        with self.book.db() as db:
+            db.execute("INSERT INTO usage_events VALUES(?,?,?,?,?,?,?,?)",
+                       (self.tenant,"legacy-key","base-boundary","2026-11",1,15000,"legacy-request",self.now))
+        self.now = int(datetime(2027,1,15,tzinfo=timezone.utc).timestamp())
+        with self.assertRaisesRegex(Error,"earlier_usage_period_must_close_first"):
+            self.meter.close(self.tenant,"base-boundary","2026-12")
+        with self.assertRaisesRegex(Error,"preactivation_usage_requires_exact_approval"):
+            self.meter.close(self.tenant,"base-boundary","2026-11")
+        repaired = self.meter.close(self.tenant,"base-boundary","2026-11",expected_due_minor=1)
+        self.assertEqual((repaired["base_minor"],repaired["due_minor"],repaired["closing_carry_micro"]),(0,1,5000))
+        active = self.meter.close(self.tenant,"base-boundary","2026-12")
+        self.assertEqual((active["base_minor"],active["opening_carry_micro"]),(500,5000))
+        with self.book.db() as db:
+            self.assertEqual(db.execute("SELECT COUNT(*) FROM usage_events").fetchone()[0],1)
+
     def test_running_totals_are_constant_work_and_invoice_close_checks_the_event_history(self):
         statements=[];original=self.book.db
         def traced():

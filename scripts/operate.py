@@ -49,6 +49,11 @@ def main():
     report=commands.add_parser("payout-report");report.add_argument("--output",type=Path,required=True)
     tick=commands.add_parser("tick");tick.add_argument("--intent")
     reconcile=commands.add_parser("reconcile");reconcile.add_argument("--intent",required=True)
+    review=commands.add_parser("reference-case")
+    review.add_argument("--intent",required=True);review.add_argument("--output",type=Path,required=True)
+    resolve=commands.add_parser("resolve-reference-conflict")
+    resolve.add_argument("--intent",required=True);resolve.add_argument("--reviewer",required=True)
+    resolve.add_argument("--expected-case-sha256",required=True)
     packet=commands.add_parser("packet");packet.add_argument("--output",type=Path,required=True)
     evidence=commands.add_parser("record-evidence")
     for name in ("control","reference","document-hash"):evidence.add_argument("--"+name,required=True)
@@ -92,8 +97,9 @@ def main():
             from hellabit.recovery import resume_sealed
             result=resume_sealed(args.input,owner_file(args.key_file,32),SandboxProvider(args.provider_state,require_existing=True),args.output)
         else:
-            if args.command=="payout-report" and not args.state.is_file():
-                raise Error("payout_report_state_required",404)
+            if args.command in ("payout-report","reference-case","resolve-reference-conflict") and not args.state.is_file():
+                code = "payout_report_state_required" if args.command == "payout-report" else "operator_state_required"
+                raise Error(code,404)
             book=Ledger(args.state)
             if args.command=='recover-handover':
                 from hellabit.recovery import handover
@@ -119,6 +125,15 @@ def main():
                 elif args.command=="payout-report":
                     from hellabit.history import export_payout_report
                     result=export_payout_report(book,tenant,args.output)
+                elif args.command=="reference-case":
+                    case=Operations(book).inspect_reference_conflict(tenant,args.intent)
+                    _write_new(args.output,canonical(case).encode())
+                    result={key:case[key] for key in ("case_sha256","resolution_available")}
+                elif args.command=="resolve-reference-conflict":
+                    row=Operations(book).resolve_reference_conflict(
+                        tenant,args.intent,args.expected_case_sha256,args.reviewer,
+                    )
+                    result={"intent":row["id"],"state":row["state"],"replayed":row.get("replayed",False)}
                 elif args.command=="packet":
                     packet=Readiness(book).packet(tenant);_write_new(args.output,canonical(packet).encode())
                     result={"packet_written":True,"identity_details_included":False,"legal_determination_included":False}

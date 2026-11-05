@@ -34,8 +34,9 @@ class PayoutVerifierTests(unittest.TestCase):
         lookup["records"][0]["state"] = "pending"
         lookup["returns"] = []
         report = self.report()
-        self.assertEqual((report["verdict"], report["payment_state"], report["observed_settled_units"]),
-                         ("pass", "pending", 0))
+        self.assertEqual((report["verdict"], report["provider_identity_verdict"],
+                          report["payment_state"], report["observed_settled_units"]),
+                         ("review", "pass", "pending", 0))
         lookup["coverage"] = "partial"
         lookup["records"] = []
         report = self.report()
@@ -53,11 +54,37 @@ class PayoutVerifierTests(unittest.TestCase):
             "multiple_accepted_payment_ids", "original_command_identity_changed", "conflicting_return_identity"})
         self.assertIsNone(report["unsettled_command_units"])
 
-    def test_cli_runs_from_empty_directory_and_does_not_open_a_ledger(self):
+    def test_settled_provider_does_not_pass_if_the_application_stays_stuck(self):
+        after = self.sample["application"]["after"]
+        after.update(state="unknown", payment_id=None, held_units=2800, settled_units=0, returned_units=0)
+        report = self.report()
+        self.assertEqual((report["verdict"],report["provider_identity_verdict"],report["application_recovery_verdict"]),
+                         ("fail","pass","fail"))
+        self.assertEqual(set(report["recovery_violations"]),
+                         {"application_not_recovered","application_accounting_mismatch"})
+
+    def test_legacy_evidence_only_establishes_the_provider_side(self):
+        self.sample["schema"] = "hellabit.payout-evidence.v1"
+        self.sample.pop("run")
+        self.sample.pop("application")
+        report = self.report()
+        self.assertEqual((report["verdict"],report["provider_identity_verdict"]),("review","pass"))
+        self.assertIn("application_readback_missing",report["recovery_evidence_gaps"])
+
+    def test_ci_checks_the_revision_run_and_deadline(self):
+        self.sample["run"]["deadline_ms"] = 5
+        report = verify(json.dumps(self.sample).encode(), expected_revision="expected-sha",
+                        expected_run_id="expected-run")
+        self.assertEqual(report["verdict"],"fail")
+        self.assertEqual(set(report["recovery_violations"]),
+                         {"application_revision_mismatch","execution_run_mismatch","recovery_deadline_exceeded"})
+
+    def test_cli_executes_sandbox_from_an_empty_directory(self):
         command = [sys.executable, str(ROOT / "scripts/verify_payout.py")]
         with tempfile.TemporaryDirectory() as tmp:
             proc = subprocess.run(command, cwd=tmp, text=True, capture_output=True, check=True, timeout=5)
-            self.assertEqual(json.loads(proc.stdout)["verdict"], "pass")
+            report = json.loads(proc.stdout)
+            self.assertEqual((report["verdict"],report["executed_local_sandbox"]),("pass",True))
             self.assertEqual(list(Path(tmp).iterdir()), [])
             bad = Path(tmp) / "malformed.json"
             bad.write_text('{"schema":1,"schema":2}')

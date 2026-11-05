@@ -67,19 +67,23 @@ class SandboxBank:
     def deposit_event(self,tenant,customer,asset,amount,reference):
         if customer!='issuer-reserve':raise Error('reserve_deposit_purpose_required',400)
         body=self.event(tenant,customer,asset,amount,reference)['body']
-        body.update({'schema':'hellabit.reserve-deposit.v1','observed_at':self.ledger.clock(),
-                     'valid_until':self.ledger.clock()+86400})
+        observed = self.ledger.clock()
+        body.update({'schema':'hellabit.reserve-deposit.v1','observed_at':observed,
+                     'valid_until':observed+86400})
         return {'body':body,'mac':hmac.new(self._key(),canonical(body).encode(),hashlib.sha256).hexdigest()}
 
     def balance_event(self,tenant,asset,balance,reference):
+        with self.ledger.transaction() as db:
+            return self._balance_event(db,tenant,asset,balance,reference)
+
+    def _balance_event(self,db,tenant,asset,balance,reference):
         units(balance,zero=True);identifier(reference)
         if asset not in ('CAD','USD'):raise Error('bank_currency_not_supported',400)
         account='reserve:'+tenant
-        with self.ledger.transaction() as db:
-            self.ledger.tenant(db,tenant);self.ledger.assert_payment_writes(db)
-            old=db.execute('SELECT sequence FROM bank_balance_sequence WHERE tenant=? AND account=?',(tenant,account)).fetchone()
-            sequence=(old[0] if old else 0)+1
-            db.execute('INSERT OR REPLACE INTO bank_balance_sequence VALUES(?,?,?)',(tenant,account,sequence))
+        self.ledger.tenant(db,tenant);self.ledger.assert_payment_writes(db)
+        old=db.execute('SELECT sequence FROM bank_balance_sequence WHERE tenant=? AND account=?',(tenant,account)).fetchone()
+        sequence=(old[0] if old else 0)+1
+        db.execute('INSERT OR REPLACE INTO bank_balance_sequence VALUES(?,?,?)',(tenant,account,sequence))
         observed=self.ledger.clock()
         body={'schema':'hellabit.reserve-balance.v1','mode':'sandbox','bank':'private-test-bank',
               'workspace':tenant,'account':account,'asset':asset,'balance':balance,'reference':reference,

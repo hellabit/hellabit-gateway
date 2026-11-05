@@ -3,7 +3,7 @@ from __future__ import annotations
 import hmac
 import json
 import secrets
-from contextlib import nullcontext
+from contextlib import ExitStack, nullcontext
 from .control import audit, ensure_schema
 from .ledger import Error, canonical, digest, identifier, units
 from .outcomes import AMBIGUOUS, AWAITING_SETTLEMENT, INTENT_STATE
@@ -213,25 +213,152 @@ class Operations:
                       {"proof_hash": proof, "source": source})
                 conflicted = db.execute("SELECT * FROM execution_intents WHERE id=?", (intent,)).fetchone()
                 return self.public(conflicted,db)
-            from .payouts import Payouts
-            if status == "settled":
-                Payouts(self.book)._paid_tx(db, tenant, row["payout"], receipt["reference"], proof)
-                state = "confirmed"
-            elif status == "rejected":
-                Payouts(self.book)._failed_tx(db, tenant, row["payout"], receipt["reference"], proof)
-                state = "failed"
-            else:
-                state = "unknown"
-            if status == "accepted":
-                accepted = receipt["reference"]
-            db.execute("""UPDATE execution_intents SET state=?,reference=?,evidence_hash=?,accepted_reference=?,
-                lease_hash=NULL,lease_until=NULL,last_error=?,updated=? WHERE id=?""",
-                (state, receipt["reference"], proof, accepted, "provider_pending" if status == "pending" else None,
-                 self.book.clock(), intent))
-            audit(self.book, db, tenant, "provider-observed", intent,
-                  {"state": "awaiting_settlement" if status == "accepted" else state,
-                   "proof_hash": proof, "source": source, "mode": "sandbox"})
+            self._record_provider_outcome(db, row, receipt, proof, source)
         return self.get(tenant, intent)
+
+    def _record_provider_outcome(self, db, row, receipt, proof, source):
+        tenant, intent, status = row["tenant"], row["id"], receipt["status"]
+        accepted = row["accepted_reference"]
+        from .payouts import Payouts
+        if status == "settled":
+            Payouts(self.book)._paid_tx(db, tenant, row["payout"], receipt["reference"], proof)
+            state = "confirmed"
+        elif status == "rejected":
+            Payouts(self.book)._failed_tx(db, tenant, row["payout"], receipt["reference"], proof)
+            state = "failed"
+        else:
+            state = "unknown"
+        if status == "accepted":
+            accepted = receipt["reference"]
+        db.execute("""UPDATE execution_intents SET state=?,reference=?,evidence_hash=?,accepted_reference=?,
+            lease_hash=NULL,lease_until=NULL,last_error=?,updated=? WHERE id=?""",
+            (state, receipt["reference"], proof, accepted, "provider_pending" if status == "pending" else None,
+             self.book.clock(), intent))
+        audit(self.book, db, tenant, "provider-observed", intent,
+              {"state": "awaiting_settlement" if status == "accepted" else state,
+               "proof_hash": proof, "source": source, "mode": "sandbox"})
+
+    def _review_provider(self, db):
+        from .fixtures import SandboxProvider
+        binding = SandboxProvider.read_binding(db)
+        if not binding:
+            raise Error("bound_provider_store_required", 423)
+        return SandboxProvider._open_bound(binding, self.book.path, None)
+
+    def _review_reference_case(self, db, external, provider, tenant, intent):
+        row = db.execute("SELECT * FROM execution_intents WHERE tenant=? AND id=?", (tenant,intent)).fetchone()
+        if not row:
+            raise Error("intent_not_found", 404)
+        if row["state"] != "unknown" or row["last_error"] != "provider_reference_conflict":
+            raise Error("provider_reference_conflict_required")
+        provider._writer(external)
+        observations = db.execute("""SELECT body,proof_hash FROM execution_observations
+            WHERE tenant=? AND intent=? ORDER BY proof_hash LIMIT 65""", (tenant,intent)).fetchall()
+        if not observations or len(observations) > 64:
+            raise Error("provider_reference_review_evidence_limit", 423)
+        inbox = db.execute("""SELECT e.body,e.proof_hash FROM provider_inbox e
+            JOIN provider_bindings b ON b.tenant=e.tenant AND b.provider=e.provider
+            WHERE e.tenant=? AND b.rail=? AND b.mode='sandbox'
+            AND json_extract(e.body,'$.receipt.key')=?
+            ORDER BY e.proof_hash LIMIT 65""", (tenant,row["rail"],row["external_key"])).fetchall()
+        if len(inbox) > 64:
+            raise Error("provider_reference_review_evidence_limit", 423)
+        references = set()
+        for observation in observations:
+            evidence = json.loads(observation["body"])
+            if digest(evidence) != observation["proof_hash"]:
+                raise Error("provider_reference_review_evidence_changed", 423)
+            references.add(identifier(evidence["reference"]))
+        for event in inbox:
+            evidence = json.loads(event["body"])
+            if digest(evidence) != event["proof_hash"]:
+                raise Error("provider_reference_review_evidence_changed", 423)
+            item = evidence["receipt"]
+            if item.get("status") in ("accepted","pending","settled","rejected"):
+                references.add(identifier(item.get("reference")))
+        stored = external.execute("SELECT receipt FROM accepted WHERE key=?", (row["external_key"],)).fetchone()
+        receipt = json.loads(stored["receipt"]) if stored else None
+        if receipt:
+            references.add(identifier(receipt["reference"]))
+        if row["accepted_reference"]:
+            references.add(row["accepted_reference"])
+        references = sorted(references)
+        placeholders = ",".join("?" for _ in references)
+        competing = {item[0] for item in external.execute(f"""SELECT json_extract(receipt,'$.reference')
+            FROM accepted WHERE key<>? AND json_extract(receipt,'$.reference') IN ({placeholders})""",
+            (row["external_key"], *references))}
+        for item in db.execute(f"""SELECT accepted_reference,reference FROM execution_intents
+            WHERE tenant=? AND connection=? AND id<>?
+            AND (accepted_reference IN ({placeholders}) OR (state='confirmed' AND reference IN ({placeholders})))""",
+            (tenant,row["connection"],intent,*references,*references)):
+            competing.update(reference for reference in item if reference in references)
+        matches = receipt and set(receipt) == {"mode","key","request_hash","status","reference","amount","asset","recipient"}
+        matches = bool(matches and receipt["mode"] == "sandbox" and receipt["status"] == "settled"
+                       and receipt["key"] == row["external_key"]
+                       and type(receipt["amount"]) is int
+                       and all(receipt[field] == row[field] for field in ("request_hash","amount","asset","recipient"))
+                       and not self._reference_conflict(db, row, receipt))
+        original = receipt["reference"] if matches else None
+        has_corrections = external.execute("SELECT 1 FROM corrections WHERE key=? LIMIT 1",
+                                           (row["external_key"],)).fetchone() is not None
+        case = {
+            "schema":"hellabit.sandbox-reference-review.v1", "workspace":tenant, "intent":intent,
+            "bound_provider_generation_hash":digest([provider.identity, provider.generation]),
+            "observation_hashes":[item["proof_hash"] for item in observations],
+            "inbox_event_hashes":[item["proof_hash"] for item in inbox],
+            "provider_receipt_hash":digest(receipt) if receipt else None,
+            "references":[{"reference":ref, "disposition":"competing_record" if ref in competing else
+                           "original_settled" if ref == original else
+                           "original_unresolved" if receipt and ref == receipt["reference"] else
+                           "absent_in_bound_sandbox"} for ref in references],
+            "provider_corrections_present":has_corrections,
+            "resolution_available":matches and not competing and not has_corrections,
+        }
+        return {**case, "case_sha256":digest(case)}, receipt, row
+
+    def inspect_reference_conflict(self, tenant, intent):
+        identifier(intent)
+        with self.book.db() as db:
+            db.execute("BEGIN")
+            provider = self._review_provider(db)
+            with provider.db() as external:
+                external.execute("BEGIN")
+                case, _, _ = self._review_reference_case(db, external, provider, tenant, intent)
+        return case
+
+    def resolve_reference_conflict(self, tenant, intent, expected_case_sha256, reviewer):
+        identifier(intent)
+        identifier(reviewer)
+        if (not isinstance(expected_case_sha256, str) or len(expected_case_sha256) != 64
+                or any(ch not in "0123456789abcdef" for ch in expected_case_sha256)):
+            raise Error("invalid_reference_case_sha256", 400)
+        # Keep the provider snapshot locked until the accounting commit exits.
+        with ExitStack() as locks, self.book.transaction() as db:
+            self.book.assert_payment_writes(db)
+            previous = db.execute("""SELECT body FROM control_audit WHERE tenant=? AND subject=?
+                AND kind='provider-reference-reviewed' ORDER BY seq DESC LIMIT 1""", (tenant,intent)).fetchone()
+            if previous:
+                decision = json.loads(previous["body"])["details"]
+                if (decision["case_sha256"],decision["reviewer"]) != (expected_case_sha256,reviewer):
+                    raise Error("provider_reference_review_already_recorded")
+                row = db.execute("SELECT * FROM execution_intents WHERE tenant=? AND id=?", (tenant,intent)).fetchone()
+                return {**self.public(row,db), "replayed":True}
+            provider = self._review_provider(db)
+            external = locks.enter_context(provider.db())
+            external.execute("BEGIN IMMEDIATE")
+            case, receipt, row = self._review_reference_case(db, external, provider, tenant, intent)
+            if not hmac.compare_digest(case["case_sha256"], expected_case_sha256):
+                raise Error("provider_reference_review_case_changed")
+            if not case["resolution_available"]:
+                raise Error("provider_reference_review_inconclusive", 423)
+            proof = digest(receipt)
+            db.execute("INSERT OR IGNORE INTO execution_observations VALUES(?,?,?,?,?,?)",
+                       (tenant,intent,proof,canonical(receipt),"reviewed-sandbox",self.book.clock()))
+            self._record_provider_outcome(db, row, receipt, proof, "reviewed-sandbox")
+            audit(self.book, db, tenant, "provider-reference-reviewed", intent,
+                  {"reviewer":reviewer, "case_sha256":expected_case_sha256,
+                   "references":case["references"], "provider_receipt_hash":proof})
+        return self.get(tenant,intent)
 
     @staticmethod
     def _reference_conflict(db, row, receipt):

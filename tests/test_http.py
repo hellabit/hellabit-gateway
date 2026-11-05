@@ -12,6 +12,24 @@ from hellabit.server import Server,Handler
 
 
 class HttpTests(unittest.TestCase):
+    def test_sandbox_reserve_retries_recover_without_new_evidence(self):
+        deposit = {"fiat_minor_units":10000,"reference":"reserve-deposit-1"}
+        balance = {"fiat_minor_units":10000,"reference":"reserve-balance-1"}
+        self.assertEqual(self.post("issuer/attest",deposit)[0],200)
+        status, original = self.post("issuer/attest-balance",balance)
+        self.assertEqual(status,200)
+        now = self.book.clock()
+        self.book.clock = lambda: now + 60
+        for route, command in (("issuer/attest",deposit),("issuer/attest-balance",balance)):
+            status, recovered = self.post(route,command)
+            self.assertEqual((status,recovered["reserve"],recovered["valid_until"]),
+                             (200,original["reserve"],original["valid_until"]))
+            self.assertTrue(recovered["replayed"])
+            self.assertEqual(self.post(route,{**command,"fiat_minor_units":10001})[0],409)
+        with self.book.db() as db:
+            self.assertEqual(db.execute("SELECT COUNT(*) FROM reserve_proofs").fetchone()[0],1)
+            self.assertEqual(db.execute("SELECT sequence FROM bank_balance_sequence").fetchone()[0],1)
+
     def test_retired_ledger_without_a_saved_port_remains_open_for_inspection(self):
         retired = Ledger(Path(self.tmp.name) / "retired.sqlite3")
         retired.create_tenant("Retired Merchant")

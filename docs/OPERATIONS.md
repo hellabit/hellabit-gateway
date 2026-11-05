@@ -20,6 +20,18 @@ hold stays in place while other payouts on the connection can proceed. A
 provisional `pending` receipt or lost reply leaves the outcome unknown. A
 conflicting or reused provider reference preserves the hold and pauses new
 submissions on that connection for reconciliation.
+
+Use the bound synthetic provider to review a conflict. Export the case to a
+private file and confirm the disposition of each reference before applying it.
+
+```sh
+python3 scripts/operate.py --tenant WORKSPACE_ID reference-case --intent INTENT_ID --output .private/reference-case.json
+python3 scripts/operate.py --tenant WORKSPACE_ID resolve-reference-conflict --intent INTENT_ID --expected-case-sha256 CASE_SHA256 --reviewer REVIEWER_REF
+```
+
+The resolution command rechecks the evidence and records the reviewer and case
+hash with the original settlement in one ledger transaction. A changed case,
+inconclusive settlement, or competing reference leaves the hold in place.
 `tick` first checks one unknown or expired submission using its original provider
 identity. It does not replace an inconclusive payment. Otherwise it processes
 one prepared intent with the separate synthetic provider. It is bounded work;
@@ -157,6 +169,11 @@ Close a completed UTC month with `usage close --plan api-basic --period YYYY-MM`
 The current month cannot close. Earlier unbilled usage must close first. Optional
 `--base-minor` is a monthly base fee in cents starting in the UTC month the
 plan was recorded. Close every active month in order, including empty months.
+If an older release accepted usage before that activation month, preview that
+period and close it with `--expected-due-minor`. The invoice includes the
+recorded usage with no base fee, carries the fractional remainder forward and
+retains the original usage records. A later invoice that already used a
+different carry requires separate reconciliation.
 An empty gap from an older release can close if it preserves the already
 recorded carry. New usage must fit the invoice limit. For an older overage,
 preview the exact amount and pass `--expected-due-minor` to close that amount.
