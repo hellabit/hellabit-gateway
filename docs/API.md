@@ -116,3 +116,14 @@ grants still determine workspace, role and customer authority. Renewing, replaci
 or reinstating a grant rotates the reference. Old tokens cannot gain the new
 authority through issuance-time leeway. Legacy tokens need fresh issuance after
 a storage upgrade.
+
+Agent purchase requests require a current, owner-configured policy. Monetary
+limits and any approval are consumed atomically with the original purchase key.
+`agent_spending_policy_required`, `agent_daily_limit_exceeded`, and
+`exact_agent_purchase_approval_required` distinguish the corrective action.
+The [operator commands](OPERATIONS.md#agent-purchase-authority) set policy and
+approve one exact quote. They do not grant authority to submit payouts.
+
+Payout state, holds, original settlement, adjustments and aggregate counts are
+read from one accounting snapshot. A read may precede a concurrent settlement;
+within that response, net paid equals original settlement minus returns.

@@ -67,10 +67,13 @@ class Payouts:
             return {"id": payout, "state": "paid", "replayed": True}
         if row["state"] != "pending": raise Error("payout_not_pending")
         rail = self.ledger.asset(db, tenant, row["asset"])["rail"]
-        self.ledger.consume_rail_event(db, tenant, rail, reference, "merchant-payout", proof)
+        from .events import sandbox_connection
+        intent=db.execute('SELECT connection FROM execution_intents WHERE tenant=? AND payout=?',(tenant,payout)).fetchone()
+        connection=intent[0] if intent else sandbox_connection(rail,row['asset'])
+        self.ledger.consume_rail_event(db, tenant, rail, reference, "merchant-payout", proof,connection=connection)
         self.ledger._post(db, tenant, "payout-paid", payout, row["asset"],
             [("payout:" + payout, -row["amount"]), ("clearing:" + rail, row["amount"])],
-            {"proof_hash": proof, "mode": "sandbox"})
+            {"proof_hash": proof, "mode": "sandbox",'external_reference':reference,'connection':connection})
         db.execute("UPDATE payouts SET state='paid',payment_reference=? WHERE id=?", (reference, payout))
         return {"id": payout, "state": "paid", "mode": "sandbox"}
 

@@ -1,6 +1,7 @@
 """Shared schema and append-only operational evidence in the existing database."""
 from __future__ import annotations
 import threading
+from contextlib import nullcontext
 from .ledger import canonical, digest
 
 _schema_lock = threading.RLock()
@@ -32,10 +33,10 @@ def audit(book, db, tenant, kind, subject, details):
     db.execute("INSERT INTO control_audit(tenant,kind,subject,body,previous,digest,created) VALUES(?,?,?,?,?,?,?)",
                (tenant, kind, subject, body, previous, hash_, now))
 
-def verify_audit(book,tenant):
+def verify_audit(book,tenant,*,db=None):
     """Check the retained operational chain independently of its SQL triggers."""
     previous,count="0"*64,0
-    with book.db() as db:
+    with book.db() if db is None else nullcontext(db) as db:
         book.tenant(db,tenant)
         for row in db.execute("SELECT body,previous,digest FROM control_audit WHERE tenant=? ORDER BY seq",(tenant,)):
             if row["previous"]!=previous or digest({"previous":previous,"body":row["body"]})!=row["digest"]:

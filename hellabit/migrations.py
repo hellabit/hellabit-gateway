@@ -6,9 +6,34 @@ import threading
 from contextlib import closing
 from .ledger import Error,canonical,SCHEMA
 
-VERSION=6
+VERSION=7
 APPLICATION_ID=0x48424757
 _lock=threading.RLock()
+
+SCHEMA_V7="""
+CREATE TABLE account_positions(tenant TEXT NOT NULL,asset TEXT NOT NULL,account TEXT NOT NULL,
+ balance INTEGER NOT NULL CHECK(typeof(balance)='integer'),PRIMARY KEY(tenant,asset,account));
+INSERT INTO account_positions SELECT j.tenant,j.asset,p.account,SUM(p.delta)
+ FROM postings p JOIN journals j ON j.seq=p.journal GROUP BY j.tenant,j.asset,p.account;
+CREATE TRIGGER position_on_posting AFTER INSERT ON postings BEGIN
+ INSERT INTO account_positions(tenant,asset,account,balance)
+ SELECT tenant,asset,NEW.account,NEW.delta FROM journals WHERE seq=NEW.journal
+ ON CONFLICT(tenant,asset,account) DO UPDATE SET balance=balance+excluded.balance;
+END;
+CREATE INDEX journal_tenant_head ON journals(tenant,seq);
+CREATE INDEX posting_journal_readback ON postings(journal);
+CREATE INDEX audit_tenant_head ON control_audit(tenant,seq);
+CREATE INDEX open_customer_holds ON operations(tenant,asset,customer) WHERE state IN ('reserved','uncertain');
+CREATE INDEX connection_open_work ON execution_intents(tenant,connection,state);
+CREATE INDEX adjustment_intent_history ON payment_adjustments(tenant,intent,created);
+CREATE TABLE reserve_assessments(tenant TEXT NOT NULL,reference TEXT NOT NULL,
+ booked_units INTEGER NOT NULL,liability_units INTEGER NOT NULL,outcome TEXT NOT NULL
+ CHECK(outcome IN ('matched','contradiction')),PRIMARY KEY(tenant,reference));
+CREATE TRIGGER reserve_assessment_no_update BEFORE UPDATE ON reserve_assessments
+ BEGIN SELECT RAISE(ABORT,'append_only'); END;
+CREATE TRIGGER reserve_assessment_no_delete BEFORE DELETE ON reserve_assessments
+ BEGIN SELECT RAISE(ABORT,'append_only'); END;
+"""
 
 def execute_script(db,script):
     statement=""
@@ -21,7 +46,7 @@ def execute_script(db,script):
 def columns(db,table):
     return {r[1] for r in db.execute("PRAGMA table_info("+table+")")}
 
-def preflight(path):
+def preflight(path, *, allow_pending=False):
     """Refuse a foreign or newer database before opening a writable connection."""
     if not path.exists():return
     with closing(sqlite3.connect(path.as_uri()+"?mode=ro",uri=True)) as db:
@@ -33,15 +58,19 @@ def preflight(path):
         legacy_tenant_only=tables=={'tenants'} and {'id','name','country','token_hash','created'}<=columns(db,'tenants')
         if tables and not legacy_tenant_only and not {'tenants','settings','journals','postings','operations'}<=tables:
             raise Error("foreign_database",423)
+        if not allow_pending and 'settings' in tables and db.execute("SELECT 1 FROM settings WHERE key='recovery_publish_pending'").fetchone():
+            raise Error('recovery_publication_pending',423)
 
 def upgrade(book):
     from .control import AUDIT_SCHEMA,audit
     from . import operations,identity,inbox,indexer,metering,readiness,issuer
     from .events import event_key
+    from .agent_policy import SCHEMA as AGENT_POLICY_SCHEMA
     schemas={"operations":operations.SCHEMA,"identity":identity.SCHEMA,
              "provider-inbox":inbox.SCHEMA,"indexer":indexer.SCHEMA,
              "metering":metering.SCHEMA,"readiness":readiness.SCHEMA,"issuer-audit":issuer.SCHEMA,"audit-only":""}
-    checksum=hashlib.sha256((SCHEMA+AUDIT_SCHEMA+"".join(schemas.values())+"v6-generation-and-event-scope").encode()).hexdigest()
+    previous_checksum=hashlib.sha256((SCHEMA+AUDIT_SCHEMA+"".join(schemas.values())+"v6-generation-and-event-scope").encode()).hexdigest()
+    checksum=hashlib.sha256((previous_checksum+SCHEMA_V7+AGENT_POLICY_SCHEMA+"v7-reserve-authority-and-positions").encode()).hexdigest()
     with _lock,book.db() as db:
         db.execute("BEGIN IMMEDIATE")
         try:
@@ -50,6 +79,9 @@ def upgrade(book):
             if current==VERSION:
                 row=db.execute("SELECT checksum FROM schema_migrations WHERE version=?",(VERSION,)).fetchone()
                 if not row or row[0]!=checksum:raise Error("migration_definition_changed",423)
+            elif current==6:
+                row=db.execute('SELECT checksum FROM schema_migrations WHERE version=6').fetchone()
+                if not row or row[0]!=previous_checksum:raise Error('migration_definition_changed',423)
             else:
                 execute_script(db,SCHEMA)
                 for table,fields in {'tenants':{'bootstrap_revoked':'INTEGER NOT NULL DEFAULT 0'},
@@ -101,6 +133,12 @@ def upgrade(book):
                     db.execute("INSERT INTO settings VALUES('usage_totals_v1','1')")
                 for row in db.execute('SELECT tenant,valid_until FROM issuer WHERE valid_until<>0').fetchall():
                     audit(book,db,row['tenant'],'reserve-evidence-revalidation-required','schema-v6',{'previous_valid_until':row['valid_until']})
+                db.execute('UPDATE issuer SET valid_until=0')
+                db.execute("INSERT INTO schema_migrations VALUES(?,?,?)",(6,previous_checksum,book.clock()))
+            if current<VERSION:
+                execute_script(db,SCHEMA_V7+AGENT_POLICY_SCHEMA)
+                for row in db.execute('SELECT tenant,valid_until FROM issuer WHERE valid_until<>0').fetchall():
+                    audit(book,db,row['tenant'],'reserve-evidence-revalidation-required','schema-v7',{'previous_valid_until':row['valid_until']})
                 db.execute('UPDATE issuer SET valid_until=0')
                 db.execute("INSERT INTO schema_migrations VALUES(?,?,?)",(VERSION,checksum,book.clock()))
                 db.execute("PRAGMA user_version="+str(VERSION));db.execute("PRAGMA application_id="+str(APPLICATION_ID))

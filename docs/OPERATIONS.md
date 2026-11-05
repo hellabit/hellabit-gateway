@@ -64,23 +64,33 @@ For a single-host synthetic handover when the current primary is intact:
 python3 scripts/operate.py --state .private/restored.sqlite3 recover-handover --authoritative-state .private/ledger.sqlite3 --provider-state .private/ledger.sqlite3.sandbox-provider.sqlite3 --output .private/resumed.sqlite3
 ```
 
-The command locks both histories, checks that the current primary extends the
-snapshot, verifies both financial and control chains, and checks complete provider
-history against exact command terms. It copies the complete primary, including
-commands, purchases and revocations created after the snapshot. It fences the
-independent synthetic provider's old workers, reconciles receipts and later
-returns, retires the previous primary and revokes every previous credential.
-Start the new path and explicitly enroll fresh access. Uncertain payments retain
-their original identity and hold. Source and restored histories are preserved.
-A failure after fencing leaves the old primary quarantined and stops; it never
-revives an old credential automatically.
+The command locks both histories, verifies that the primary extends the restored
+snapshot, and checks the exact provider identity. It records the retirement and
+provider fence durably. It then processes independent receipts and corrections in
+pages, preserving progress and the candidate. The new ledger pins the same provider
+store and its new writer generation. `tick`, `reconcile` and `cancel-unknown` keep
+using that store; a missing or replaced store blocks operation.
 
-This profile requires an intact authoritative primary and a dedicated synthetic
-provider store. It is not catastrophic archive recovery, cross-host fencing, bank
-credential revocation or production promotion. If the current primary is lost,
-a complete independent command archive and an enrolled provider recovery contract
-are required. There is no unconditional quarantine-clearing command. See
-[the recovery contract](CONFORMANCE.md).
+If interrupted, rerun the same handover command with the same source, provider,
+restored copy and destination. The old writer stays retired. The command verifies a
+candidate that became visible before directory synchronization and completes that
+same activation. Recovered access requires fresh enrollment.
+
+For a **planned cutover with independently retained custody**, add
+`--seal-to PATH --key-file KEY_PATH` to the handover. This prepares an encrypted
+checkpoint and leaves the destination inactive. Keep the checkpoint and key in
+separate custody, and retain the independent provider store. To finish from the
+checkpoint, including after losing the original primary and its candidate:
+
+```sh
+python3 scripts/operate.py recover-sealed --input PATH --key-file KEY_PATH --provider-state PROVIDER_PATH --output SAME_DESTINATION
+```
+
+The store pins the archive hash, destination and fence. A consumed checkpoint
+cannot recreate a lost active primary from stale history. This profile does not
+recover changes missing from an unplanned crash after activation. No live bank
+credential revocation, cross-host writer fence or production promotion is provided.
+There is no unconditional quarantine-clearing command. See [conformance](CONFORMANCE.md).
 
 ## Close a payment proven never accepted
 
@@ -259,3 +269,28 @@ Each financial transaction validates the same current local grant while holding
 the SQLite write lock and before commit. A revocation committed first prevents the
 financial write. An admitted read may finish if revocation occurs after read
 admission; reads are not retroactively canceled.
+
+## Agent purchase authority
+
+An agent can read its assigned account immediately. To authorize purchases, give
+the agent an explicit policy for one asset, priced service and workspace merchant.
+Save a mode `0600` JSON file with `asset`, `resource`, `recipient` (the literal
+`workspace-merchant`), `per_purchase`, `daily`, `approval_above` (integer native
+units), and `expires` (Unix seconds). `0` as the expected version creates the policy;
+use the returned version for a change.
+
+```sh
+python3 scripts/operate.py --tenant WORKSPACE_ID agent-policy set --principal AGENT_ID --file POLICY_JSON --expected-version 0
+python3 scripts/operate.py --tenant WORKSPACE_ID agent-policy approve --principal AGENT_ID --quote QUOTE_ID --key ORIGINAL_PURCHASE_KEY
+```
+
+An approval binds the exact quote, original purchase key, policy version and grant
+generation. It expires within five minutes and is consumed with the reservation.
+Reservations count against the gross UTC daily budget, including later releases or
+refunds; replaying the original command does not count twice. An agent cannot run
+another caller's reservation or execute one under a superseded policy or grant.
+
+Version 7 backfills account positions atomically from existing postings. Internal
+reconciliation compares the cached positions and agent budgets with authoritative
+records. API rate counters use a separate local store; this does not change grant
+or settlement authority.

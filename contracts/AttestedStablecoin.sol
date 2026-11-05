@@ -16,6 +16,8 @@ contract AttestedStablecoin is ERC20, AccessControlDefaultAdminRules, Pausable {
     bytes3 public immutable referenceCurrency;
     uint256 public reserveCeiling;
     uint64 public reserveValidUntil;
+    uint64 public reserveObservedAt;
+    uint64 public reserveSequence;
     uint256 public pendingRedemptions;
     mapping(bytes32 => bool) public usedMintRequests;
     mapping(bytes32 => bool) public usedAttestations;
@@ -25,9 +27,10 @@ contract AttestedStablecoin is ERC20, AccessControlDefaultAdminRules, Pausable {
     mapping(bytes32 => Redemption) public redemptions;
 
     event ReserveAttested(bytes32 indexed proofHash, uint256 ceiling, uint64 validUntil);
+    event ReserveDeficitObserved(bytes32 indexed proofHash, uint256 observed, uint256 liabilities);
     event Issued(bytes32 indexed requestId, address indexed holder, uint256 amount);
-    event RedemptionRequested(bytes32 indexed requestId, address indexed holder, uint256 amount);
-    event RedemptionPaid(bytes32 indexed requestId, bytes32 indexed paymentProof);
+    event RedemptionRequested(bytes32 indexed claimId, address indexed holder, bytes32 indexed requestId, uint256 amount);
+    event RedemptionPaid(bytes32 indexed claimId, bytes32 indexed paymentProof);
     event FreezeChanged(address indexed holder, bool frozen);
 
     constructor(string memory name_, string memory symbol_, bytes32 issuer_, bytes3 currency_, address admin)
@@ -38,13 +41,18 @@ contract AttestedStablecoin is ERC20, AccessControlDefaultAdminRules, Pausable {
         issuerId = issuer_; referenceCurrency = currency_;
     }
     function decimals() public pure override returns (uint8) { return 6; }
-    function attestReserve(uint256 ceiling, uint64 validUntil, bytes32 proofHash) external onlyRole(ATTESTOR_ROLE) {
+    function attestReserve(uint256 ceiling, uint64 observedAt, uint64 validUntil, uint64 sequence, bytes32 proofHash)
+        external onlyRole(ATTESTOR_ROLE) {
         require(proofHash != bytes32(0) && !usedAttestations[proofHash], "attestation replay");
-        require(validUntil > block.timestamp && validUntil <= block.timestamp + 1 days, "attestation expiry");
-        require(ceiling >= totalSupply() + pendingRedemptions, "below liabilities");
+        require(observedAt <= block.timestamp && block.timestamp - observedAt <= 5 minutes, "observation stale");
+        require(sequence > reserveSequence && observedAt >= reserveObservedAt, "observation order");
+        require(validUntil > block.timestamp && validUntil <= uint256(observedAt) + 1 days, "attestation expiry");
         usedAttestations[proofHash] = true;
         reserveCeiling = ceiling; reserveValidUntil = validUntil;
+        reserveObservedAt = observedAt; reserveSequence = sequence;
         emit ReserveAttested(proofHash, ceiling, validUntil);
+        uint256 liabilities = totalSupply() + pendingRedemptions;
+        if (ceiling < liabilities) emit ReserveDeficitObserved(proofHash, ceiling, liabilities);
     }
     function mint(address holder, uint256 amount, bytes32 requestId) external onlyRole(MINTER_ROLE) whenNotPaused {
         require(block.timestamp < reserveValidUntil, "reserve stale");
@@ -53,19 +61,26 @@ contract AttestedStablecoin is ERC20, AccessControlDefaultAdminRules, Pausable {
         usedMintRequests[requestId] = true;
         _mint(holder, amount); emit Issued(requestId, holder, amount);
     }
-    function requestRedemption(uint256 amount, bytes32 requestId) external whenNotPaused {
-        require(amount > 0 && requestId != bytes32(0) && redemptions[requestId].holder == address(0), "redemption replay or amount");
-        _burn(msg.sender, amount);
-        redemptions[requestId] = Redemption(msg.sender, amount, false);
-        pendingRedemptions += amount;
-        emit RedemptionRequested(requestId, msg.sender, amount);
+    function redemptionKey(address holder, bytes32 requestId) public pure returns (bytes32) {
+        return keccak256(abi.encode(holder, requestId));
     }
-    function confirmRedemption(bytes32 requestId, bytes32 paymentProof) external onlyRole(SETTLER_ROLE) {
-        Redemption storage item = redemptions[requestId];
+    function requestRedemption(uint256 amount, bytes32 requestId) external whenNotPaused {
+        bytes32 claimId = redemptionKey(msg.sender, requestId);
+        require(amount > 0 && requestId != bytes32(0) && redemptions[claimId].holder == address(0), "redemption replay or amount");
+        _burn(msg.sender, amount);
+        redemptions[claimId] = Redemption(msg.sender, amount, false);
+        pendingRedemptions += amount;
+        emit RedemptionRequested(claimId, msg.sender, requestId, amount);
+    }
+    function confirmRedemption(address holder, bytes32 requestId, bytes32 paymentProof) external onlyRole(SETTLER_ROLE) {
+        bytes32 claimId = redemptionKey(holder, requestId);
+        Redemption storage item = redemptions[claimId];
         require(item.holder != address(0) && !item.paid && paymentProof != bytes32(0) && !usedPayoutProofs[paymentProof], "redemption state");
         usedPayoutProofs[paymentProof] = true;
-        item.paid = true; pendingRedemptions -= item.amount; reserveCeiling -= item.amount;
-        emit RedemptionPaid(requestId, paymentProof);
+        item.paid = true; pendingRedemptions -= item.amount;
+        if (item.amount > reserveCeiling) { reserveCeiling = 0; reserveValidUntil = 0; }
+        else reserveCeiling -= item.amount;
+        emit RedemptionPaid(claimId, paymentProof);
     }
     function setFrozen(address holder, bool value) external onlyRole(COMPLIANCE_ROLE) {
         require(holder != address(0), "holder required"); frozen[holder] = value;

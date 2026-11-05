@@ -3,6 +3,7 @@ from __future__ import annotations
 import hmac
 import json
 import secrets
+from contextlib import nullcontext
 from .control import audit, ensure_schema
 from .ledger import Error, canonical, digest, identifier, units
 
@@ -64,21 +65,23 @@ class Operations:
         audit(self.book, db, tenant, "intent-created", id_, {"state": state, "payout": payout})
         return id_
 
-    def public(self,row,db=None):
+    def public(self,row,db):
         from .outcomes import intent_view
-        if db is not None:return intent_view(db,row)
-        with self.book.db() as connection:return intent_view(connection,row)
+        return intent_view(db,row)
 
     def get(self, tenant, intent):
         identifier(intent)
         with self.book.db() as db:
+            db.execute('BEGIN')
             self.book.tenant(db, tenant)
             row = db.execute("SELECT * FROM execution_intents WHERE tenant=? AND id=?", (tenant, intent)).fetchone()
             if not row: raise Error("intent_not_found", 404)
             return self.public(row,db)
 
-    def list(self, tenant):
-        with self.book.db() as db:
+    def list(self, tenant, *, db=None):
+        own=db is None
+        with self.book.db() if own else nullcontext(db) as db:
+            if own:db.execute('BEGIN')
             self.book.tenant(db, tenant)
             rows = db.execute("""SELECT * FROM execution_intents WHERE tenant=?
                 ORDER BY CASE state WHEN 'unknown' THEN 0 WHEN 'submitting' THEN 1 WHEN 'prepared' THEN 2 ELSE 3 END,
@@ -140,10 +143,14 @@ class Operations:
             audit(self.book, db, tenant, "submission-unknown", intent, {"reason": code})
         return self.get(tenant, intent)
 
-    @staticmethod
-    def _adapter(adapter):
+    def _adapter(self,adapter):
         if getattr(adapter, "mode", None) != "sandbox":
             raise Error("live_connection_not_enrolled", 423)
+        from .fixtures import SandboxProvider
+        with self.book.db() as db:binding=SandboxProvider.read_binding(db)
+        if binding:
+            if not isinstance(adapter,SandboxProvider):raise Error('bound_provider_store_required',423)
+            adapter.validate_binding(binding,ledger=self.book.path)
 
     def finish(self, tenant, intent, receipt, *, lease=None, source="lookup", verified_event=None):
         required = {"mode", "key", "request_hash", "status", "reference", "amount", "asset", "recipient"}

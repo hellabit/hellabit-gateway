@@ -108,10 +108,13 @@ class Readiness:
         return {"recorded":True,"externally_verified":False,"financial_activation_enabled":False}
 
     def report(self,tenant):
-        check=self.book.reconcile(tenant)
-        audit_check=verify_audit(self.book,tenant)
-        ops=self.operations.list(tenant)
+        from .backup import capacity
+        from .recovery import BATCH
         with self.book.db() as db:
+            db.execute('BEGIN')
+            check=self.book.reconcile(tenant,db=db)
+            audit_check=verify_audit(self.book,tenant,db=db)
+            ops=self.operations.list(tenant,db=db)
             self.book.tenant(db,tenant)
             evidence=[dict(r) for r in db.execute("SELECT * FROM readiness_evidence WHERE tenant=? ORDER BY created DESC,rowid DESC",(tenant,))]
             chains=[dict(r) for r in db.execute("""SELECT id,chain_id,cursor,finalized,halted,updated
@@ -123,6 +126,12 @@ class Readiness:
             tables={r[0] for r in db.execute("SELECT name FROM sqlite_master WHERE type='table'")}
             principals=db.execute("SELECT COUNT(*) FROM api_principals WHERE tenant=? AND revoked=0 AND expires>?",
                                   (tenant,self.book.clock())).fetchone()[0] if "api_principals" in tables else 0
+            retired=bool(db.execute("SELECT 1 FROM settings WHERE key='recovery_retired'").fetchone())
+            quarantine=retired or bool(db.execute("SELECT 1 FROM settings WHERE key IN ('recovery_quarantine','recovery_publish_pending')").fetchone())
+            unresolved=[dict(r) for r in db.execute("""SELECT id,connection,asset,amount,created FROM execution_intents
+                WHERE tenant=? AND (state='unknown' OR state='submitting' AND lease_until<=?) ORDER BY created LIMIT 30""",(tenant,self.book.clock()))]
+            recovery_history={'intents':sum(ops['counts'].values()),'adjustments':db.execute('SELECT COUNT(*) FROM payment_adjustments WHERE tenant=?',(tenant,)).fetchone()[0],
+                              'batch_size':BATCH,'fixed_row_limit':None}
         controls=[]
         for id_,title,action in REQUIREMENTS:
             row=next((r for r in evidence if r["control"]==id_ and r["expires"]>self.book.clock()),None)
@@ -130,20 +139,14 @@ class Readiness:
             controls.append({"id":id_,"title":title,"status":"reported-unverified" if row else "expired" if expired else "missing",
                              "next_action":action,"external_verification_established":False})
         unknown=ops["counts"].get("unknown",0)+overdue
-        from .backup import capacity
         backup_capacity=capacity(self.book)
-        with self.book.db() as db:
-            retired=bool(db.execute("SELECT 1 FROM settings WHERE key='recovery_retired'").fetchone())
-            quarantine=retired or bool(db.execute("SELECT 1 FROM settings WHERE key='recovery_quarantine'").fetchone())
-            unresolved=[dict(r) for r in db.execute("""SELECT id,connection,asset,amount,created FROM execution_intents
-                WHERE tenant=? AND (state='unknown' OR state='submitting' AND lease_until<=?) ORDER BY created LIMIT 30""",(tenant,self.book.clock()))]
         for row in unresolved:row['age_seconds']=max(0,self.book.clock()-row['created'])
         return {"schema":"hellabit.readiness-report.v1","version":__version__,"observed_at":self.book.clock(),
                 "role_profile":"merchant-controlled-software","intended_markets":["CA","US"],
                 "source_build":local_build(),
                 "machine_observations":{"ledger_balanced":check["ok"],"journal_count":check["journal_count"],
                     "control_audit_valid":audit_check["ok"],"control_audit_entries":audit_check["entries_checked"],
-                    "backup_capacity":backup_capacity,"recovery_quarantine":quarantine,"previous_writer_retired":retired,"unresolved_holds":unresolved,
+                    "backup_capacity":backup_capacity,"retained_recovery_history":recovery_history,"recovery_quarantine":quarantine,"previous_writer_retired":retired,"unresolved_holds":unresolved,
                     "unknown_or_overdue_submissions":unknown,"payout_counts":ops["counts"],
                     "enrolled_api_principals":principals,"chain_bindings":chains},
                 "external_controls":controls,"legal_role_resolved":False,"live_payments_enabled":False,

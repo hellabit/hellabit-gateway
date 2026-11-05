@@ -199,18 +199,7 @@ class Handler(BaseHTTPRequestHandler):
                 if not tail:
                     if principal["role"]=="agent":
                         self._reply(book.agent_state(tenant,principal["customer"]));return
-                    snapshot={**book.snapshot(tenant),"issuer":issuer.state(tenant)}
-                    if principal["role"]=="owner":
-                        Operations(book)
-                        with book.db() as db:
-                            ids=[p["id"] for p in snapshot["payouts"]]
-                            marks=",".join("?" for _ in ids)
-                            intents={r["payout"]:dict(r) for r in db.execute(
-                                "SELECT payout,id,state FROM execution_intents WHERE tenant=? AND payout IN("+marks+")",
-                                (tenant,*ids))} if ids else {}
-                        for payout in snapshot["payouts"]:
-                            info=intents.get(payout["id"],{})
-                            payout["intent_id"]=info.get("id");payout["intent_state"]=info.get("state")
+                    snapshot=book.snapshot(tenant,include_issuer=True)
                     self._reply(snapshot); return
                 if tail=='ops':self._reply(Operations(book).list(tenant));return
                 if tail=='readiness':self._reply(Readiness(book).report(tenant));return
@@ -247,14 +236,14 @@ class Handler(BaseHTTPRequestHandler):
                 result = book.create_quote(tenant, body["asset"], body["amount"], body["fee"], body.get("resource", "report"), body.get('input'))
             elif tail == "operations":
                 fields(body, ["customer", "quote", "key"])
-                result = book.reserve(tenant, body["customer"], body["quote"], body["key"])
+                result = book.reserve(tenant, body["customer"], body["quote"], body["key"],actor=principal)
             elif tail == 'operations/lookup':
                 fields(body, ['key']); result = book.lookup_operation(tenant, body['key'])
                 if principal['role'] == 'agent' and result['customer'] != principal['customer']:
                     raise Error('customer_forbidden', 403)
             elif tail.startswith("operations/") and tail.count("/") == 2:
                 _, op, action = tail.split("/"); identifier(op)
-                if action == "run": fields(body, []); result = book.run_report(tenant, op)
+                if action == "run": fields(body, []); result = book.run_report(tenant, op,actor=principal)
                 elif action == "refund": fields(body, []); result = book.refund(tenant, op)
                 elif action in ("uncertain", "release", "complete"):
                     fields(body, [], ["result_hash"])
@@ -287,8 +276,7 @@ class Handler(BaseHTTPRequestHandler):
             elif tail == "issuer/payout":
                 fields(body, ["redemption", "payment_reference"])
                 state = issuer.state(tenant)
-                row = next((x for x in state["redemptions"] if x["id"] == body["redemption"]), None)
-                if not row: raise Error("redemption_not_found", 404)
+                row = issuer.redemption(tenant,body['redemption'])
                 event = SandboxBank(book).event(tenant, "redemption:" + row["id"], state["currency"], row["amount"] // 10_000, body["payment_reference"], "debit")
                 result = issuer.confirm_redemption(tenant, row["id"], event)
             elif tail == "payouts":
@@ -300,8 +288,7 @@ class Handler(BaseHTTPRequestHandler):
                 operations=Operations(book);operations.get(tenant,intent)
                 from .fixtures import SandboxProvider
                 def lost_reply():raise TimeoutError("Synthetic reply interrupted after acceptance")
-                provider=SandboxProvider(book.path.with_name(book.path.name+".sandbox-provider.sqlite3"),
-                    after_accept=lost_reply if action=="interrupt" else None)
+                provider=SandboxProvider.for_ledger(book,after_accept=lost_reply if action=="interrupt" else None)
                 if action in ("process","interrupt"):result=operations.process_one(tenant,provider,intent=intent)
                 elif action=="reconcile":result=operations.reconcile(tenant,intent,provider)
                 elif action=="cancel":result=operations.cancel_unknown(tenant,intent,provider)

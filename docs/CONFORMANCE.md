@@ -45,7 +45,12 @@ closed. External credentials also fail during quarantine. The single-host synthe
 handover command requires a complete intact authoritative primary, verifies its
 history extends the snapshot, fences provider workers, retains all later commands
 and revokes all previous access. It creates a new path; source histories remain
-preserved. A balanced database alone does not establish complete history.
+preserved. The resumed ledger retains the provider-store identity and exact writer
+generation. A missing store is an explicit fault. Checkpoints permit restarting the
+same handover, including a candidate published before its directory was synced.
+A sealed pre-activation archive can finish an already fenced handover with the same
+independent provider store when the old ledger is unavailable. A balanced database
+alone does not establish complete history or cover arbitrary later losses.
 
 Before supporting a live restore, an adapter must reconstruct all missing
 commands, provider movements and later corrections; reconcile their exact terms;

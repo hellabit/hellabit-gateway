@@ -57,9 +57,25 @@ class IssuerLifecycleTests(unittest.TestCase):
         with self.assertRaisesRegex(Error,"reserve_evidence_stale"):
             self.issuer.mint(self.tenant,"agent-01",10000,"mint-with-stale-pool")
         bad=self.bank.balance_event(self.tenant,"USD",1,"incomplete-balance")
-        with self.assertRaisesRegex(Error,"reserve_balance_mismatch"):self.issuer.attest_balance(self.tenant,bad)
+        self.assertTrue(self.issuer.attest_balance(self.tenant,bad)['reserve_reconciliation_required'])
         full=self.bank.balance_event(self.tenant,"USD",100001,"full-current-balance")
         self.assertTrue(self.issuer.attest_balance(self.tenant,full)["reserve_current"])
+
+    def test_authoritative_shortfall_revokes_unused_authority_without_erasing_liabilities(self):
+        self.issuer.attest(self.tenant,self.bank.deposit_event(self.tenant,'issuer-reserve','USD',10000,'initial-deposit'))
+        self.issuer.mint(self.tenant,'agent-01',50_000_000,'initial-mint')
+        observation=self.bank.balance_event(self.tenant,'USD',4000,'shortfall')
+        state=self.issuer.attest_balance(self.tenant,observation)
+        self.assertEqual((state['reserve'],state['observed_reserve_units'],state['liabilities'],state['headroom']),(100_000_000,40_000_000,50_000_000,0))
+        self.assertTrue(state['reserve_reconciliation_required']);self.assertFalse(state['reserve_current'])
+        self.assertTrue(self.issuer.attest_balance(self.tenant,observation)['replayed'])
+        self.issuer.attest(self.tenant,self.bank.deposit_event(self.tenant,'issuer-reserve','USD',1,'small-credit'))
+        with self.assertRaisesRegex(Error,'reserve_reconciliation_required'):self.issuer.mint(self.tenant,'agent-01',1,'blocked-mint')
+        self.assertEqual(self.issuer.request_redemption(self.tenant,'agent-01',10000,'preserved-claim')['state'],'pending')
+        with self.book.db() as db:
+            self.assertEqual(db.execute('SELECT balance FROM reserve_observations WHERE reference=?',('shortfall',)).fetchone()[0],4000)
+        full=self.bank.balance_event(self.tenant,'USD',10001,'reconciled-balance')
+        self.assertTrue(self.issuer.attest_balance(self.tenant,full)['reserve_current'])
 
     def test_merchant_earnings_have_a_complete_redemption_lifecycle(self):
         self.issuer.attest(self.tenant,self.bank.deposit_event(self.tenant,"issuer-reserve","USD",10000,"reserves"))

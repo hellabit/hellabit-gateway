@@ -24,7 +24,7 @@ from hellabit.rails import SandboxBank
 
 class RecoveryContractTests(unittest.TestCase):
     def setUp(self):
-        self.tmp=tempfile.TemporaryDirectory();self.root=Path(self.tmp.name);self.now=1000
+        self.tmp=tempfile.TemporaryDirectory();self.root=Path(self.tmp.name).resolve();self.now=1000
         self.book=Ledger(self.root/"ledger.sqlite3",clock=lambda:self.now)
         self.tenant=self.book.create_tenant("Contract Merchant")["tenant"]
         for asset in ("CAD","USD"):
@@ -38,6 +38,12 @@ class RecoveryContractTests(unittest.TestCase):
 
     def payout(self,key="command",asset="CAD",amount=50,book=None):
         return Payouts(book or self.book).request(self.tenant,asset,amount,"recipient",key)
+
+    def cli(self,state,*arguments,ok=True):
+        cmd=[sys.executable,str(Path(__file__).resolve().parents[1]/'scripts/operate.py'),'--state',str(state),'--tenant',self.tenant,*map(str,arguments)]
+        r=subprocess.run(cmd,capture_output=True,text=True,timeout=25,env={'PATH':os.defpath,'PYTHONDONTWRITEBYTECODE':'1'})
+        self.assertEqual(r.returncode,0 if ok else 1,r.stderr+r.stdout)
+        return json.loads(r.stdout)
 
     def test_failure_after_provider_fencing_preserves_histories_and_stops_both_writers(self):
         key=secrets.token_bytes(32);snapshot=self.root/'old.hbbackup';create(self.book,snapshot,key)
@@ -55,6 +61,65 @@ class RecoveryContractTests(unittest.TestCase):
         self.assertTrue(retired['machine_observations']['recovery_quarantine'])
         self.assertTrue(retired['machine_observations']['previous_writer_retired'])
         with Ledger(restored_path).db() as db:self.assertTrue(db.execute("SELECT 1 FROM settings WHERE key='recovery_quarantine'").fetchone())
+        resumed=self.cli(restored_path,'recover-handover','--authoritative-state',self.book.path,'--provider-state',self.provider.path,'--output',output)
+        self.assertTrue(resumed['result']['resumed']);self.assertTrue(output.is_file())
+
+    def test_restart_completes_after_link_before_directory_sync(self):
+        key=secrets.token_bytes(32);snapshot=self.root/'frozen.hbbackup';create(self.book,snapshot,key)
+        restored_path=self.root/'restored.sqlite3';restore(snapshot,restored_path,key)
+        payout=self.payout();self.ops.process_one(self.tenant,self.provider)
+        output=self.root/'resumed.sqlite3'
+        from hellabit.recovery import _publish_file
+        def interrupted_link(source,dest):
+            if dest==output:
+                os.link(source,dest);raise OSError('simulated crash before directory sync')
+            return _publish_file(source,dest)
+        with patch('hellabit.recovery._publish_file',side_effect=interrupted_link),self.assertRaises(OSError):
+            handover(Ledger(restored_path),self.book,self.provider,output)
+        self.assertTrue(output.is_file())
+        self.assertEqual(self.cli(output,'status',ok=False)['error'],'recovery_publication_pending')
+        result=self.cli(restored_path,'recover-handover','--authoritative-state',self.book.path,'--provider-state',self.provider.path,'--output',output)['result']
+        self.assertTrue(result['provider_binding_preserved']);self.assertEqual(self.cli(output,'reconcile','--intent',payout['intent'])['result']['net_paid_units'],50)
+        self.assertEqual(self.provider.accepted_count(),1)
+
+    def test_sealed_checkpoint_recovers_after_original_primary_and_stage_are_lost(self):
+        outside=self.root/'retained';outside.mkdir();key=secrets.token_bytes(32)
+        key_path=outside/'recovery.key';key_path.write_bytes(key);key_path.chmod(0o600)
+        snapshot=self.root/'before.hbbackup';create(self.book,snapshot,key)
+        restored_path=self.root/'old.sqlite3';restore(snapshot,restored_path,key)
+        payout=self.payout();self.ops.process_one(self.tenant,self.provider)
+        external=self.ops.get(self.tenant,payout['intent'])['external_key']
+        output=self.root/'after-loss.sqlite3';archive=outside/'fenced.hbbackup'
+        result=self.cli(restored_path,'recover-handover','--authoritative-state',self.book.path,'--provider-state',self.provider.path,
+                        '--output',output,'--seal-to',archive,'--key-file',key_path)['result']
+        self.assertTrue(result['sealed']);self.assertFalse(output.exists())
+        for path in (self.book.path,restored_path,self.root/('.hellabit-'+result['handover_id']+'.sqlite3')):path.unlink()
+        command=('recover-sealed','--input',archive,'--key-file',key_path,'--provider-state',self.provider.path,'--output',output)
+        self.provider.return_payment(external,'while-primary-lost',5)
+        self.assertFalse(self.cli(self.book.path,*command)['result']['original_primary_required'])
+        outcome=self.cli(output,'reconcile','--intent',payout['intent'])['result']
+        self.assertEqual((outcome['returned_units'],outcome['net_paid_units']),(5,45))
+        self.assertEqual(self.provider.accepted_count(),1)
+        output.rename(self.root/'after-loss-moved.sqlite3')
+        self.assertEqual(self.cli(self.book.path,*command,ok=False)['error'],'sealed_checkpoint_already_used')
+
+    def test_handover_continues_after_midpage_loss_without_reposting(self):
+        key=secrets.token_bytes(32);snapshot=self.root/'before.hbbackup';create(self.book,snapshot,key)
+        restored_path=self.root/'old.sqlite3';restore(snapshot,restored_path,key)
+        for i in range(6):
+            payout=self.payout('page-'+str(i));self.provider.submit(self.ops.get(self.tenant,payout['intent']))
+        output=self.root/'resumed.sqlite3';original=Operations.finish;calls=0
+        def stopped(*args,**kwargs):
+            nonlocal calls
+            result=original(*args,**kwargs);calls+=1
+            if calls==3:raise OSError('interruption between history checkpoints')
+            return result
+        with patch('hellabit.recovery.BATCH',2),patch.object(Operations,'finish',stopped),self.assertRaises(OSError):
+            handover(Ledger(restored_path),self.book,self.provider,output)
+        result=self.cli(restored_path,'recover-handover','--authoritative-state',self.book.path,'--provider-state',self.provider.path,'--output',output)['result']
+        self.assertEqual(result['provider_movements'],6)
+        with Ledger(output).db() as db:self.assertEqual(db.execute("SELECT COUNT(*) FROM journals WHERE kind='payout-paid'").fetchone()[0],6)
+        self.assertEqual(self.provider.accepted_count(),6)
 
     def test_actual_handover_cli_retains_missing_commands_reconciles_returns_and_retires_access(self):
         self.now=int(time.time())
@@ -87,10 +152,23 @@ class RecoveryContractTests(unittest.TestCase):
         with self.assertRaises(Error):resumed.principal(merchant_key)
         with self.assertRaisesRegex(Error,'previous_writer_retired'):self.payout('old-writer')
         with self.assertRaisesRegex(Error,'provider_writer_fenced'):self.provider.submit(job)
-        self.payout('new-writer',book=resumed)
-        fresh_provider=SandboxProvider(self.provider.path)
-        self.assertEqual(Operations(resumed).process_one(self.tenant,fresh_provider)['intent']['state'],'confirmed')
-        self.assertTrue(resumed.reconcile(self.tenant)['ok']);self.assertEqual(fresh_provider.accepted_count(),2)
+        self.provider.return_payment(job['external_key'],'post-handover-return',30)
+        projected=self.cli(output,'reconcile','--intent',payout['intent'])['result']
+        self.assertEqual((projected['returned_units'],projected['net_paid_units']),(50,0))
+        next_payout=self.payout('new-writer',book=resumed)
+        self.assertEqual(self.cli(output,'tick','--intent',next_payout['intent'])['result']['state'],'confirmed')
+        canceled=self.payout('safe-close',book=resumed);Operations(resumed).claim(self.tenant,intent=canceled['intent'])
+        with resumed.db() as db:db.execute('UPDATE execution_intents SET lease_until=0 WHERE id=?',(canceled['intent'],))
+        self.cli(output,'reconcile','--intent',canceled['intent'])
+        self.assertEqual(self.cli(output,'cancel-unknown','--intent',canceled['intent'])['result']['state'],'failed')
+        second_backup=self.root/'second.hbbackup';create(resumed,second_backup,key)
+        second_restored=self.root/'second-restored.sqlite3';restore(second_backup,second_restored,key)
+        second=self.root/'second-resumed.sqlite3'
+        self.assertTrue(self.cli(second_restored,'recover-handover','--authoritative-state',output,'--provider-state',self.provider.path,'--output',second)['result']['provider_binding_preserved'])
+        self.assertEqual(self.cli(second,'reconcile','--intent',payout['intent'])['result']['returned_units'],50)
+        for state in (output,second):self.assertFalse(state.with_name(state.name+'.sandbox-provider.sqlite3').exists())
+        self.assertEqual(self.provider.accepted_count(),2)
+        self.assertTrue(Ledger(second).reconcile(self.tenant)['ok'])
 
     def test_unknown_external_command_blocks_handover_before_fencing_or_publishing(self):
         key=secrets.token_bytes(32);snapshot=self.root/'old.hbbackup';create(self.book,snapshot,key)

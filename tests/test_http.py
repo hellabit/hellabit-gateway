@@ -12,6 +12,43 @@ from hellabit.server import Server,Handler
 
 
 class HttpTests(unittest.TestCase):
+    def test_ops_response_holds_one_snapshot_across_settlement_and_return(self):
+        from hellabit.fixtures import SandboxProvider
+        from hellabit.operations import Operations
+        from hellabit.payouts import Payouts
+        from hellabit.rails import SandboxBank
+        SandboxBank(self.book).fund(self.tenant,'agent-01','CAD',500,'snapshot-funding')
+        q=self.book.create_quote(self.tenant,'CAD',500,0)['quote']
+        self.book.run_report(self.tenant,self.book.reserve(self.tenant,'agent-01',q,'snapshot-work')['id'])
+        payout=Payouts(self.book).request(self.tenant,'CAD',100,'merchant','snapshot-payment')
+        ops=Operations(self.book);provider=SandboxProvider.for_ledger(self.book)
+        entered,release=threading.Event(),threading.Event();response=[];original=Operations.public
+        def pause(ops,row,db):
+            if threading.current_thread() is not threading.main_thread() and row['state']=='prepared' and not entered.is_set():
+                entered.set();self.assertTrue(release.wait(5))
+            return original(ops,row,db)
+        def read():response.append(self.request('GET',self.base+'/ops',headers=self.owner))
+        with patch.object(Operations,'public',pause):
+            thread=threading.Thread(target=read);thread.start()
+            try:
+                self.assertTrue(entered.wait(3))
+                ops.process_one(self.tenant,provider)
+                key=ops.get(self.tenant,payout['intent'])['external_key'];provider.return_payment(key,'full-return',100)
+                ops.reconcile(self.tenant,payout['intent'],provider)
+            finally:release.set();thread.join(5)
+        self.assertEqual(response[0][0],200)
+        before=json.loads(response[0][2]);item=before['intents'][0]
+        self.assertEqual((item['state'],item['returned_units'],item['net_paid_units'],before['counts']['prepared']),('prepared',0,0,1))
+        current=json.loads(self.request('GET',self.base+'/ops',headers=self.owner)[2])['intents'][0]
+        self.assertEqual((current['original_settled_units'],current['returned_units'],current['net_paid_units']),(100,100,0))
+
+    def test_redemption_lookup_does_not_depend_on_visible_page(self):
+        self.post('issuer/attest',{'fiat_minor_units':10000,'reference':'reserve-before-claims'})
+        self.post('issuer/mint',{'customer':'agent-01','amount':1000000,'reference':'mint-before-claims'})
+        for i in range(21):self.assertEqual(self.post('issuer/redeem',{'customer':'agent-01','amount':10000,'reference':'claim-'+str(i)})[0],200)
+        self.assertEqual(self.post('issuer/payout',{'redemption':'claim-0','payment_reference':'oldest-claim-debit'})[0],200)
+        self.assertEqual(self.post('issuer/payout',{'redemption':'missing-claim','payment_reference':'no-such-debit'})[0],404)
+
     def test_key_revocation_during_upload_or_after_admission_prevents_reservation(self):
         from hellabit.rails import SandboxBank
         SandboxBank(self.book).fund(self.tenant,'agent-01','CAD',500,'upload-guard-funding')
@@ -225,6 +262,8 @@ class HttpTests(unittest.TestCase):
         self.post("sandbox/fund", {"customer": "agent-01", "asset": "CAD", "amount": 100, "reference": "fund-agent"})
         q = self.book.create_quote(self.tenant, "CAD", 100, 1)["quote"]
         key = self.book.issue_agent_key(self.tenant, "agent-01")
+        from hellabit.agent_policy import AgentPolicy
+        AgentPolicy(self.book).configure(self.tenant,key['id'],{'asset':'CAD','resource':'report','recipient':'workspace-merchant','per_purchase':100,'daily':100,'approval_above':100,'expires':self.book.clock()+3600},0)
         self.bearer = {"Authorization": "Bearer " + key["api_key"]}
         status, op = self.post("operations", {"customer": "agent-01", "quote": q, "key": "own-job"}, owner=False)
         self.assertEqual(status, 200)

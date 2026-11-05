@@ -6,7 +6,7 @@ A merchant-controlled payment operations engine for API teams: durable payout
 intent, held budgets, original-identity recovery, inspectable results and exact
 usage accounting. Free Apache-2.0 core. No Stripe dependency or compulsory fee.
 
-Version **0.6.0 is a developer pre-release**. The console moves synthetic value;
+Version **0.7.0 is a developer preview**. The console moves synthetic value;
 real-money submission remains blocked. Canada and the United States are intended
 markets. No bank, public-chain signer, legal issuer or customer is enrolled.
 
@@ -69,23 +69,26 @@ test USDC uses six decimals. No currency conversion is inferred.
 
 ## Recover through the full lifecycle
 
-Version 0.6 carries return identities through inbox deduplication, compensating
-postings and financial exports with their exact connection scope. Payouts show
-original settlement, returned value and current net paid. CLI scheduling respects
-the selected command and advances unrelated accounts while another is unknown.
+The provider store stays bound across ledger relocation. The ordinary operator
+commands keep consulting its original identity and reject missing stores or a
+changed writer generation. Handover retains its fence, candidate and progress so
+the same command can finish after interruption. Receipts and later corrections
+are processed in bounded pages. An optional encrypted sealed checkpoint can finish
+an already fenced handover after the primary and its local candidate are lost.
 
-Storage upgrades are atomic and versioned before status, export or serving.
-Access tokens bind a specific authorization generation; revocation is checked
-again after request upload and inside financial transactions. Reserve freshness
-comes from authenticated observation time and sequence, with typed redemption
-identities separating customer balances from merchant proceeds.
+Payment views use one accounting snapshot. New movement identities include their
+clearing account scope; legacy records keep their original identities. Indexed
+account positions are checked against journal postings. API rate accounting is
+separate from the ledger writer. Agents require an explicit spending policy and
+one-use approval above its threshold.
 
-The [single-host handover command](docs/OPERATIONS.md) retains an intact primary's
-complete history, reconciles synthetic provider receipts and returns, fences old
-workers and requires fresh access enrollment. A lost primary still requires a
-complete independent archive. Live provider conformance, production key custody
-and production restore acceptance remain unenrolled. See the
-[payment outcome and recovery contract](docs/CONFORMANCE.md).
+In the issuer lab, authenticated reserve contradictions are retained, new issuance
+stops and existing claims remain recorded. The contract accepts an adverse reserve
+observation, checks its order and freshness, and scopes redemption IDs to each holder.
+
+See the [operating commands](docs/OPERATIONS.md) and [conformance contract](docs/CONFORMANCE.md).
+The implemented recovery profiles are synthetic. A live provider contract, an approved
+account and recovery of arbitrary unarchived production changes are outside this proof.
 
 ## Use it in your project
 

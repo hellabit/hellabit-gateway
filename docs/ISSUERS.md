@@ -9,16 +9,19 @@ administrator can assign them. Production enrollment must establish distinct
 operational principals and governance rather than assuming separate addresses
 mean separate organizations.
 
-An authorized attestor states a reserve ceiling with a proof hash and expiry.
-The contract prevents supply plus pending redemption claims from exceeding that
-ceiling. A proof hash is not a bank statement and cannot prove that reserves
-exist. A dishonest attestor or compromised administrator remains a material
-trust boundary. Contracts are not upgradeable; migration needs an explicit plan.
+An authorized attestor supplies an observed ceiling, observation time, expiry,
+monotonically increasing sequence and proof hash. A newer authenticated lower
+balance is recorded even when it is below liabilities. It removes stale minting
+headroom immediately. An old or out-of-order observation cannot restore authority.
+A proof hash is not a bank statement. Attestor and administrator trust still matter.
+Contracts are not upgradeable; migration needs an explicit plan.
 
-A holder burns tokens to request redemption. The unpaid claim keeps reserve
-capacity occupied. Only the enrolled settler records an external payout, once,
-against a nonempty, unreused payment proof. Offchain payout evidence must be
-verified independently before this method is called.
+A holder burns tokens to request redemption. Each claim is keyed by holder and
+request ID, so another holder cannot consume that identity. The unpaid claim
+continues to count as a liability. Only the enrolled settler confirms the exact
+holder and request, using independently verified, nonempty and unreused payout
+proof. A verified payout can close an existing claim during a shortfall; if it
+exceeds the last observed ceiling, fresh evidence is required for further issuance.
 
 Real issuance needs legal operator identity, reserve ownership and segregation,
 custody arrangements, redemption rights, liquidity and reconciliation policies,
@@ -34,8 +37,9 @@ operator and functions. Sources: [Canada Gazette](https://gazette.gc.ca/rp-pr/p1
 
 
 The offchain lab separates new deposits from full reserve-balance evidence.
-A small deposit cannot refresh an older reserve pool. Refreshing evidence must
-name the complete current synthetic balance; it never proves real reserves.
+A small deposit cannot refresh an older reserve pool. The full test bank observation is separate from the booked balance and liabilities.
+An authenticated contradiction is retained as a reconciliation case and stops new
+issuance until matching fresh evidence is available. It never proves real reserves.
 Customers, merchant proceeds and platform fees each have a redemption path.
 Burning any holder's balance keeps the unpaid claim in liabilities until the
 separate test payout is recorded. Branded issuance remains an experimental

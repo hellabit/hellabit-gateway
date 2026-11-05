@@ -50,6 +50,7 @@ async function value(c,name,args=[]){
   return c.iface.decodeFunctionResult(name,bytesToHex(result.execResult.returnValue))[0];
 }
 const hash=s=>keccak256(toUtf8Bytes(s));
+const observation=(ceiling,sequence,proof,observedAt=timestamp)=>[ceiling,observedAt,observedAt+3600n,sequence,hash(proof)];
 const stable=await deploy('AttestedStablecoin',['Example Institution Dollar','EXUSD',hash('example-issuer'),'0x555344',wallets[0].address]);
 check('Issuer starts with zero supply',await value(stable,'totalSupply')===0n);
 check('Unprivileged mint fails',!(await invoke(7,stable,'mint',[wallets[4].address,1n,hash('attack')])).ok);
@@ -57,20 +58,23 @@ for(const [role,who] of [['ATTESTOR_ROLE',1],['MINTER_ROLE',2],['SETTLER_ROLE',3
   check(role+' explicitly assigned',(await invoke(0,stable,'grantRole',[await value(stable,role),wallets[who].address])).ok);
 }
 check('Mint before reserves fails',!(await invoke(2,stable,'mint',[wallets[4].address,1n,hash('before-reserve')])).ok);
-check('Unauthorized reserve assertion fails',!(await invoke(7,stable,'attestReserve',[1_000_000n,timestamp+3600n,hash('bad-proof')])).ok);
-check('Reserve assertion recorded',(await invoke(1,stable,'attestReserve',[1_000_000n,timestamp+3600n,hash('bank-proof-1')])).ok);
-check('Reserve attestation replay fails',!(await invoke(1,stable,'attestReserve',[2_000_000n,timestamp+3600n,hash('bank-proof-1')])).ok);
+check('Unauthorized reserve assertion fails',!(await invoke(7,stable,'attestReserve',observation(1_000_000n,1n,'bad-proof'))).ok);
+check('Reserve assertion recorded',(await invoke(1,stable,'attestReserve',observation(1_000_000n,1n,'bank-proof-1'))).ok);
+check('Reserve attestation replay fails',!(await invoke(1,stable,'attestReserve',observation(2_000_000n,2n,'bank-proof-1'))).ok);
 check('Issuance within reserve cap succeeds',(await invoke(2,stable,'mint',[wallets[4].address,1_000_000n,hash('mint-1')])).ok);
 check('Mint request replay fails',!(await invoke(2,stable,'mint',[wallets[4].address,1_000_000n,hash('mint-1')])).ok);
 check('Over-issuance fails',!(await invoke(2,stable,'mint',[wallets[4].address,1n,hash('mint-2')])).ok);
 check('Holder can request redemption',(await invoke(4,stable,'requestRedemption',[500_000n,hash('redemption-1')])).ok);
 check('Burn keeps pending cash liability',await value(stable,'totalSupply')===500_000n&&await value(stable,'pendingRedemptions')===500_000n);
 check('Pending redemption cannot be reminted',!(await invoke(2,stable,'mint',[wallets[4].address,1n,hash('mint-3')])).ok);
-check('Reserve assertion cannot ignore redemption claims',!(await invoke(1,stable,'attestReserve',[500_000n,timestamp+3600n,hash('bank-proof-2')])).ok);
-check('Unprivileged payout confirmation fails',!(await invoke(7,stable,'confirmRedemption',[hash('redemption-1'),hash('payout-1')])).ok);
-check('Named settler can record payout',(await invoke(3,stable,'confirmRedemption',[hash('redemption-1'),hash('payout-1')])).ok);
-check('Payout confirmation replay fails',!(await invoke(3,stable,'confirmRedemption',[hash('redemption-1'),hash('payout-1')])).ok);
-check('Payout reduces reserve cap and liability together',await value(stable,'reserveCeiling')===500_000n&&await value(stable,'pendingRedemptions')===0n);
+check('Newer reserve evidence can establish previously unused headroom',(await invoke(1,stable,'attestReserve',observation(1_500_000n,2n,'bank-proof-2'))).ok);
+check('A deficit observation is retained and removes old mint authority',(await invoke(1,stable,'attestReserve',observation(400_000n,3n,'bank-proof-3'))).ok&&await value(stable,'reserveCeiling')===400_000n&&!(await invoke(2,stable,'mint',[wallets[4].address,1n,hash('blocked-after-deficit')])).ok);
+check('Out-of-order or stale observations cannot restore issuance',!(await invoke(1,stable,'attestReserve',observation(1_500_000n,2n,'old-sequence'))).ok&&!(await invoke(1,stable,'attestReserve',observation(1_500_000n,4n,'old-time',timestamp-301n))).ok);
+check('Unprivileged payout confirmation fails',!(await invoke(7,stable,'confirmRedemption',[wallets[4].address,hash('redemption-1'),hash('payout-1')])).ok);
+check('Named settler can record payout',(await invoke(3,stable,'confirmRedemption',[wallets[4].address,hash('redemption-1'),hash('payout-1')])).ok);
+check('Payout confirmation replay fails',!(await invoke(3,stable,'confirmRedemption',[wallets[4].address,hash('redemption-1'),hash('payout-1')])).ok);
+check('A confirmed redemption survives the deficit and requires fresh reserve evidence',await value(stable,'reserveCeiling')===0n&&await value(stable,'pendingRedemptions')===0n&&await value(stable,'reserveValidUntil')===0n);
+check('Fresh evidence can restore issuance headroom',(await invoke(1,stable,'attestReserve',observation(600_000n,4n,'bank-proof-4'))).ok);
 check('Compliance freeze succeeds',(await invoke(0,stable,'setFrozen',[wallets[4].address,true])).ok);
 check('Frozen holder cannot transfer',!(await invoke(4,stable,'transfer',[wallets[5].address,1n])).ok);
 check('Compliance unfreeze succeeds',(await invoke(0,stable,'setFrozen',[wallets[4].address,false])).ok);
@@ -103,6 +107,14 @@ check('Fee-leg failure reverts whole settlement',!(await invoke(7,router,'settle
 check('Failed settlement leaves balances and replay marker unchanged',await value(dollar,'balanceOf',[wallets[5].address])===999_000n&&!(await value(router,'settled',[wallets[4].address,second.operationId])));
 const other=await deploy('AttestedStablecoin',['Second Issuer Dollar','OTHER',hash('second-issuer'),'0x434144',wallets[7].address]);
 check('White-label deployments have independent identity and supply',await value(other,'issuerId')!==await value(stable,'issuerId')&&await value(other,'totalSupply')===0n);
+for(const [role,who] of [['ATTESTOR_ROLE',1],['MINTER_ROLE',2],['SETTLER_ROLE',3]])assert.ok((await invoke(7,other,'grantRole',[await value(other,role),wallets[who].address])).ok);
+assert.ok((await invoke(1,other,'attestReserve',observation(100n,1n,'second-issuer-backing'))).ok);
+for(const i of [4,5])assert.ok((await invoke(2,other,'mint',[wallets[i].address,50n,hash('holder-'+i)])).ok);
+const shared=hash('public-request-id');
+check('One holder cannot consume another holder’s public redemption ID',(await invoke(5,other,'requestRedemption',[1n,shared])).ok&&(await invoke(4,other,'requestRedemption',[40n,shared])).ok);
+check('Replay still fails within the same holder’s scope',!(await invoke(4,other,'requestRedemption',[1n,shared])).ok);
+check('Settlement confirmation selects the holder’s exact claim',(await invoke(3,other,'confirmRedemption',[wallets[4].address,shared,hash('holder-four-proof')])).ok&&await value(other,'pendingRedemptions')===1n);
+
 check('Admin cannot transfer immediately through delayed admin control',await value(stable,'defaultAdminDelay')===172800n);
 
 const output=path.join(root,'artifacts');fs.mkdirSync(output,{recursive:true,mode:0o700});

@@ -60,6 +60,9 @@ def main():
     identity.add_argument("--binding",type=Path,required=True)
     identity.add_argument("--grant",type=Path);identity.add_argument("--principal")
     identity.add_argument("--expected-version",type=int)
+    agent=commands.add_parser('agent-policy');agent.add_argument('action',choices=['set','approve'])
+    agent.add_argument('--principal',required=True);agent.add_argument('--file',type=Path)
+    agent.add_argument('--expected-version',type=int);agent.add_argument('--quote');agent.add_argument('--key')
     cancel=commands.add_parser("cancel-unknown");cancel.add_argument("--intent",required=True)
     index=commands.add_parser("index");index.add_argument("action",choices=["bind","status","sync"])
     index.add_argument("--config",type=Path,required=True);index.add_argument("--max-blocks",type=int,default=20)
@@ -69,6 +72,10 @@ def main():
     recover.add_argument('--authoritative-state',type=Path,required=True)
     recover.add_argument('--provider-state',type=Path,required=True)
     recover.add_argument('--output',type=Path,required=True)
+    recover.add_argument('--seal-to',type=Path);recover.add_argument('--key-file',type=Path)
+    sealed=commands.add_parser('recover-sealed');sealed.add_argument('--input',type=Path,required=True)
+    sealed.add_argument('--key-file',type=Path,required=True);sealed.add_argument('--provider-state',type=Path,required=True)
+    sealed.add_argument('--output',type=Path,required=True)
     args=parser.parse_args()
     try:
         if args.command=="backup" and args.action=="keygen":
@@ -77,13 +84,18 @@ def main():
             from hellabit.backup import restore
             if args.key_file is None or args.input is None:raise Error("backup_input_and_key_required",400)
             result=restore(args.input,args.output,owner_file(args.key_file,32))
+        elif args.command=='recover-sealed':
+            from hellabit.recovery import resume_sealed
+            result=resume_sealed(args.input,owner_file(args.key_file,32),SandboxProvider(args.provider_state,require_existing=True),args.output)
         else:
             book=Ledger(args.state)
             if args.command=='recover-handover':
                 from hellabit.recovery import handover
                 if not args.authoritative_state.is_file() or not args.provider_state.is_file():
                     raise Error('intact_authoritative_history_required',423)
-                result=handover(book,Ledger(args.authoritative_state),SandboxProvider(args.provider_state),args.output)
+                if bool(args.seal_to)!=bool(args.key_file):raise Error('sealed_archive_and_key_required',400)
+                result=handover(book,Ledger(args.authoritative_state),SandboxProvider(args.provider_state,require_existing=True),args.output,
+                                sealed_archive=args.seal_to,key=owner_file(args.key_file,32) if args.key_file else None)
             elif args.command=="backup":
                 from hellabit.backup import create
                 if args.key_file is None:raise Error("backup_key_required",400)
@@ -106,6 +118,17 @@ def main():
                 elif args.command=="drill":
                     from hellabit.backup import recovery_drill
                     result=recovery_drill(book)
+                elif args.command=='agent-policy':
+                    from hellabit.agent_policy import AgentPolicy
+                    from hellabit.rpc import _strict_object,_invalid_constant
+                    policy=AgentPolicy(book)
+                    if args.action=='set':
+                        if args.file is None or args.expected_version is None:raise Error('policy_file_and_expected_version_required',400)
+                        terms=json.loads(owner_file(args.file,8192),object_pairs_hook=_strict_object,parse_constant=_invalid_constant)
+                        result=policy.configure(tenant,args.principal,terms,args.expected_version)
+                    else:
+                        if not args.quote or not args.key:raise Error('exact_quote_and_purchase_key_required',400)
+                        result=policy.approve(tenant,args.principal,args.quote,args.key)
                 elif args.command=="identity":
                     from hellabit.api import load_config
                     from hellabit.identity import Identity
@@ -151,10 +174,12 @@ def main():
                         synced=projection.sync(tenant,cfg["binding"],rpc,args.max_blocks)
                         result={k:synced[k] for k in ("chain_id","cursor","finalized","halted","financial_postings")}
                 elif args.command in ("tick","reconcile","cancel-unknown"):
-                    ops=Operations(book);provider=SandboxProvider(book.path.with_name(book.path.name+".sandbox-provider.sqlite3"))
+                    ops=Operations(book);provider=SandboxProvider.for_ledger(book)
                     if args.command=="cancel-unknown":
                         row=ops.cancel_unknown(tenant,args.intent,provider);result={"intent":row["id"],"state":row["state"]}
-                    elif args.command=="reconcile":row=ops.reconcile(tenant,args.intent,provider);result={"intent":row["id"],"state":row["state"]}
+                    elif args.command=="reconcile":
+                        row=ops.reconcile(tenant,args.intent,provider)
+                        result={'intent':row['id'],**{k:row[k] for k in ('state','original_settled_units','returned_units','net_paid_units','effective_outcome','latest_adjustment')}}
                     else:
                         result=ops.tick(tenant,provider,intent=args.intent)
                 elif args.command=="usage":
