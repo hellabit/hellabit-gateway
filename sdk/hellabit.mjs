@@ -34,5 +34,10 @@ export class Hellabit {
   run(tenant,id){return this.request(tenant,'/operations/'+this.id(id)+'/run','POST',{});}
   delivery(tenant,id){return this.request(tenant,'/deliveries/'+this.id(id));}
   refund(tenant,id){return this.request(tenant,'/operations/'+this.id(id)+'/refund','POST',{});}
+  payouts(tenant){return this.request(tenant,'/ops');}
+  payout(tenant,intent){
+    if(typeof intent!=='string'||!/^intent_[A-Za-z0-9_-]{1,89}$/.test(intent))throw new Error('Invalid payout intent');
+    return this.request(tenant,'/ops/'+intent);
+  }
   id(value){if(typeof value!=='string'||!/^op_[a-f0-9]{24}$/.test(value))throw new Error('Invalid operation');return value;}
 }

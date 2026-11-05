@@ -2,15 +2,29 @@
 
 **When a payment reply disappears, recover the original payment.**
 
-A merchant-controlled payment operations engine for API teams: durable payout
-intent, held budgets, original-identity recovery, inspectable results and exact
-usage accounting. Free Apache-2.0 core. No Stripe dependency or compulsory fee.
+A merchant-controlled payment operations engine for API teams. Test whether a
+lost reply recovers the original payout and see what still needs attention after
+settlement or a return. The Apache-2.0 core also includes durable payout holds,
+original-identity recovery and exact usage accounting. Export a payout
+reconciliation CSV with held, settled, returned and net paid amounts in their
+native units. [Payout report command](docs/OPERATIONS.md#export-the-complete-financial-record)
 
-Version **0.8.0 is a developer preview**. The console moves synthetic value;
+Version **0.9.0 is a developer preview**. The console moves synthetic value;
 real-money submission remains blocked. Canada and the United States are intended
 markets. No bank, public-chain signer, legal issuer or customer is enrolled.
 
-## Try it in one command
+## Check a payout without opening an account
+
+```sh
+python3 scripts/verify_payout.py
+```
+
+The sample loses the reply to a CAD 28.00 payout, finds one original settlement
+and shows a CAD 6.00 return. To check your own test workflow, give the command a
+bounded evidence file with `--evidence PATH`. It reads your records without
+creating a gateway ledger or calling a provider. [Evidence format and CI use](docs/PAYOUT-VERIFICATION.md)
+
+## Run the sandbox console
 
 ```sh
 python3 scripts/run.py --demo
@@ -18,12 +32,13 @@ python3 scripts/run.py --demo
 
 Use Python 3.11+ with patched SQLite: 3.51.3+, or the supported 3.44.6/3.50.7
 backport branches. The launcher checks the library actually loaded. Open its
-printed loopback URL. Quit and reopen the command to resume your private state.
+printed loopback URL. Quit and reopen the command to resume your private state at
+the saved address.
 The core console uses only Python's standard library; it stays on `127.0.0.1`.
 
 1. **Paid work:** add test credits, reserve an invoice total check and inspect its
    computed result. Its charge and durable delivery commit together.
-2. Request a test payout and open the recovery queue from **Overview**. Choose
+2. Review and confirm a test payout, then open the recovery queue from **Overview**. Choose
    **Test an interrupted reply**. The test provider accepts it, but the reply
    disappears. Overview shows the amount held and the affected connection.
 3. Open the queue again and choose **Check original payment**. Recovery finds
@@ -32,7 +47,9 @@ The core console uses only Python's standard library; it stays on `127.0.0.1`.
 4. **Settlement planning** also exports a responsibility packet. Saved documents
    never establish legal approval or activate a financial connection.
 5. **Issuer lab** keeps branded test issuance, reserve assertions and redemption
-   claims separate. Test balances and tokens have no monetary value.
+   claims separate. Payout, issuance and redemption drafts and receipts stay
+   with the workspace across tabs and restarts. Test balances and tokens have
+   no monetary value.
 
 Encrypted recovery rehearsal and the optional ASGI API need a one-time free,
 hash-locked dependency setup:

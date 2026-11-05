@@ -1,0 +1,50 @@
+{
+  "schema": "hellabit.payout-evidence.v1",
+  "environment": "synthetic",
+  "revision": "sample-v1",
+  "command": {
+    "scope": "example-cad-test",
+    "reference": "invoice-82-payout",
+    "key": "invoice-82-attempt",
+    "asset": "CAD",
+    "recipient_ref": "recipient-test-05",
+    "amount_units": 2800
+  },
+  "attempts": [
+    {
+      "command": {
+        "scope": "example-cad-test",
+        "reference": "invoice-82-payout",
+        "key": "invoice-82-attempt",
+        "asset": "CAD",
+        "recipient_ref": "recipient-test-05",
+        "amount_units": 2800
+      },
+      "reply": "lost",
+      "payment_id": null
+    }
+  ],
+  "lookup": {
+    "scope": "example-cad-test",
+    "reference": "invoice-82-payout",
+    "coverage": "all-matches",
+    "records": [
+      {
+        "payment_id": "test-payment-2001",
+        "reference": "invoice-82-payout",
+        "asset": "CAD",
+        "recipient_ref": "recipient-test-05",
+        "amount_units": 2800,
+        "state": "settled"
+      }
+    ],
+    "returns": [
+      {
+        "return_id": "test-return-3001",
+        "payment_id": "test-payment-2001",
+        "asset": "CAD",
+        "amount_units": 600
+      }
+    ]
+  }
+}

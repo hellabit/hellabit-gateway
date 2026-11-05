@@ -6,6 +6,7 @@ import secrets
 from contextlib import nullcontext
 from .control import audit, ensure_schema
 from .ledger import Error, canonical, digest, identifier, units
+from .outcomes import AMBIGUOUS, AWAITING_SETTLEMENT, INTENT_STATE
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS execution_intents(
@@ -84,14 +85,15 @@ class Operations:
             if own:db.execute('BEGIN')
             self.book.tenant(db, tenant)
             observed = self.book.clock()
-            rows = db.execute("""SELECT * FROM execution_intents WHERE tenant=?
-                ORDER BY CASE state WHEN 'unknown' THEN 0 WHEN 'submitting' THEN 1 WHEN 'prepared' THEN 2 ELSE 3 END,
+            rows = db.execute(f"""SELECT * FROM execution_intents WHERE tenant=?
+                ORDER BY CASE WHEN {AMBIGUOUS} THEN 0 WHEN state='submitting' THEN 1
+                    WHEN {AWAITING_SETTLEMENT} THEN 2 WHEN state='prepared' THEN 3 ELSE 4 END,
                 created DESC,rowid DESC LIMIT 30""", (tenant,)).fetchall()
             counts = {r["state"]: r["n"] for r in db.execute(
-                "SELECT state,COUNT(*) n FROM execution_intents WHERE tenant=? GROUP BY state", (tenant,))}
-            attention = [dict(r) for r in db.execute("""SELECT connection,asset,
+                f"SELECT {INTENT_STATE} AS state,COUNT(*) n FROM execution_intents WHERE tenant=? GROUP BY 1", (tenant,))}
+            attention = [dict(r) for r in db.execute(f"""SELECT connection,asset,
                 COUNT(*) AS held_count,SUM(amount) AS held_units,MIN(created) AS oldest_created
-                FROM execution_intents WHERE tenant=? AND state IN ('unknown','submitting')
+                FROM execution_intents WHERE tenant=? AND (state='submitting' OR {AMBIGUOUS})
                 GROUP BY connection,asset ORDER BY oldest_created,connection""", (tenant,))]
             projected=[self.public(r,db) for r in rows]
         return {"intents": projected, "counts": counts, "attention": attention, "mode": "sandbox",
@@ -112,11 +114,11 @@ class Operations:
             self.book.tenant(db, tenant)
             self.book.assert_payment_writes(db)
             self._expire(db, tenant)
-            row = db.execute("""SELECT e.* FROM execution_intents e WHERE e.tenant=? AND e.state='prepared'
+            row = db.execute(f"""SELECT e.* FROM execution_intents e WHERE e.tenant=? AND e.state='prepared'
                 AND (? IS NULL OR e.id=?)
                 AND NOT EXISTS(SELECT 1 FROM execution_intents uncertain
                   WHERE uncertain.tenant=e.tenant AND uncertain.connection=e.connection
-                    AND uncertain.state IN ('unknown','submitting'))
+                    AND (uncertain.state='submitting' OR ({AMBIGUOUS})))
                 ORDER BY e.created,e.rowid LIMIT 1""", (tenant,intent,intent)).fetchone()
             if not row: return None
             lease = secrets.token_hex(24)
@@ -161,7 +163,8 @@ class Operations:
         required = {"mode", "key", "request_hash", "status", "reference", "amount", "asset", "recipient"}
         if not isinstance(receipt, dict) or set(receipt) != required or receipt["mode"] != "sandbox":
             raise Error("invalid_provider_receipt", 403)
-        if receipt["status"] not in ("settled", "rejected", "pending"):
+        status = receipt["status"]
+        if status not in ("settled", "rejected", "pending", "accepted"):
             raise Error("invalid_provider_status", 403)
         identifier(receipt["reference"])
         proof = digest(receipt)
@@ -173,6 +176,8 @@ class Operations:
             if any(type(receipt[k]) is not type(v) or receipt[k] != v for k, v in expected.items()):
                 raise Error("provider_receipt_binding_mismatch", 403)
             if row["state"] in ("confirmed", "failed"):
+                if status == "accepted" and receipt["reference"] == row["reference"]:
+                    return {**self.public(row,db), "replayed": True}
                 if row["evidence_hash"] != proof: raise Error("settlement_evidence_conflict", 409)
                 return {**self.public(row,db), "replayed": True}
             if lease is not None:
@@ -194,24 +199,50 @@ class Operations:
                     raise Error("verified_provider_event_required", 403)
             elif row["state"] != "unknown":
                 raise Error("reconciliation_not_available", 409)
+            accepted = row["accepted_reference"]
+            if row["last_error"] == "provider_reference_conflict":
+                raise Error("provider_reference_conflict", 409)
+            if (accepted and status == "pending") or row["evidence_hash"] == proof:
+                return {**self.public(row,db), "replayed": True}
             db.execute("INSERT OR IGNORE INTO execution_observations VALUES(?,?,?,?,?,?)",
                        (tenant, intent, proof, canonical(receipt), source, self.book.clock()))
+            if self._reference_conflict(db, row, receipt):
+                db.execute("""UPDATE execution_intents SET state='unknown',lease_hash=NULL,lease_until=NULL,
+                    last_error='provider_reference_conflict',updated=? WHERE id=?""", (self.book.clock(), intent))
+                audit(self.book, db, tenant, "provider-reference-conflict", intent,
+                      {"proof_hash": proof, "source": source})
+                conflicted = db.execute("SELECT * FROM execution_intents WHERE id=?", (intent,)).fetchone()
+                return self.public(conflicted,db)
             from .payouts import Payouts
-            if receipt["status"] == "settled":
+            if status == "settled":
                 Payouts(self.book)._paid_tx(db, tenant, row["payout"], receipt["reference"], proof)
                 state = "confirmed"
-            elif receipt["status"] == "rejected":
+            elif status == "rejected":
                 Payouts(self.book)._failed_tx(db, tenant, row["payout"], receipt["reference"], proof)
                 state = "failed"
             else:
                 state = "unknown"
-            db.execute("""UPDATE execution_intents SET state=?,reference=?,evidence_hash=?,
+            if status == "accepted":
+                accepted = receipt["reference"]
+            db.execute("""UPDATE execution_intents SET state=?,reference=?,evidence_hash=?,accepted_reference=?,
                 lease_hash=NULL,lease_until=NULL,last_error=?,updated=? WHERE id=?""",
-                (state, receipt["reference"], proof, "provider_pending" if state == "unknown" else None,
+                (state, receipt["reference"], proof, accepted, "provider_pending" if status == "pending" else None,
                  self.book.clock(), intent))
             audit(self.book, db, tenant, "provider-observed", intent,
-                  {"state": state, "proof_hash": proof, "source": source, "mode": "sandbox"})
+                  {"state": "awaiting_settlement" if status == "accepted" else state,
+                   "proof_hash": proof, "source": source, "mode": "sandbox"})
         return self.get(tenant, intent)
+
+    @staticmethod
+    def _reference_conflict(db, row, receipt):
+        reference = receipt["reference"]
+        if row["accepted_reference"] and reference != row["accepted_reference"]:
+            return True
+        if receipt["status"] not in ("accepted", "settled"):
+            return False
+        return db.execute("""SELECT 1 FROM execution_intents WHERE tenant=? AND connection=? AND id<>?
+            AND (accepted_reference=? OR (state='confirmed' AND reference=?)) LIMIT 1""",
+            (row["tenant"], row["connection"], row["id"], reference, reference)).fetchone() is not None
 
     def process_one(self, tenant, adapter, intent=None):
         self._adapter(adapter)
@@ -296,6 +327,8 @@ class Operations:
         row=self.get(tenant,intent)
         with self.book.db() as db:self.book.assert_payment_writes(db)
         if row["state"]!="unknown":raise Error("unknown_payment_required",409)
+        if row["accepted_reference"] or row["last_error"] == "provider_reference_conflict":
+            raise Error("provider_reference_conflict_requires_reconciliation",423)
         if row["last_error"]=="migrated_payout_requires_reconciliation":
             raise Error("legacy_payment_identity_requires_external_reconciliation",423)
         close=getattr(adapter,"close_without_effect",None)

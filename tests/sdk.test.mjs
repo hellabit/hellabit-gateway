@@ -18,3 +18,16 @@ test('SDK bounds a stalled token callback and never submits a payment',async()=>
   let calls=0;const client=new Hellabit({baseURL:'https://api.example',timeout:100,getAccessToken:()=>new Promise(()=>{}),fetch:async()=>{calls++;}});
   await assert.rejects(client.reserve('hb_example',{}),e=>e.code==='access_token_timeout');assert.equal(calls,0);
 });
+test('Operator SDK inspects the exact payout with read-only requests',async()=>{
+  const calls=[],intent='intent_recovery';
+  const client=new Hellabit({baseURL:'https://api.example',getAccessToken:()=> 'header.payload.signature',
+    fetch:async(url,options)=>{
+      calls.push([new URL(url).pathname,options.method,options.body]);
+      return {ok:true,json:async()=>url.endsWith('/ops')?{intents:[{id:intent}]}:{id:intent,state:'unknown'}};
+    }});
+  assert.equal((await client.payouts('hb_example')).intents[0].id,intent);
+  assert.equal((await client.payout('hb_example',intent)).state,'unknown');
+  assert.throws(()=>client.payout('hb_example','intent_../other'));
+  assert.deepEqual(calls,[['/api/v1/workspaces/hb_example/ops','GET',undefined],
+    ['/api/v1/workspaces/hb_example/ops/'+intent,'GET',undefined]]);
+});

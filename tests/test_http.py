@@ -12,6 +12,81 @@ from hellabit.server import Server,Handler
 
 
 class HttpTests(unittest.TestCase):
+    def test_retired_ledger_without_a_saved_port_remains_open_for_inspection(self):
+        retired = Ledger(Path(self.tmp.name) / "retired.sqlite3")
+        retired.create_tenant("Retired Merchant")
+        with retired.transaction() as db:
+            db.execute("INSERT INTO settings VALUES('recovery_retired','test-retirement')")
+        server = Server(retired, None)
+        try:
+            self.assertGreater(server.server_port, 0)
+            with retired.db() as db:
+                self.assertIsNone(db.execute("SELECT 1 FROM settings WHERE key='console_loopback_port'").fetchone())
+        finally:
+            server.server_close()
+
+    def test_owner_command_is_single_use_and_recovers_legacy_payout_identity(self):
+        self.post("sandbox/fund", {"customer":"agent-01","asset":"CAD","amount":900,"reference":"draft-funding"})
+        quote = self.book.create_quote(self.tenant, "CAD", 900, 0)["quote"]
+        self.book.run_report(self.tenant, self.book.reserve(self.tenant, "agent-01", quote, "draft-work")["id"])
+        terms = {"asset":"CAD","amount":100,"recipient":"demo-merchant"}
+        _, existing = self.post("payouts", {**terms, "key":"merchant-payout-old"})
+        status, draft = self.post("commands/payout/prepare", {
+            "terms":terms,"after":None,"legacy_key":"merchant-payout-old"})
+        self.assertEqual((status, draft["state"]), (200, "ready"))
+        self.assertEqual(self.post("commands/payout/prepare", {"terms":terms,"after":None})[0], 409)
+        self.assertEqual(self.request("GET", self.base+"/commands", headers=self.bearer)[0], 403)
+        self.assertEqual(self.post("commands/payout/confirm", {"id":draft["id"]}, owner=False)[0], 403)
+        status, result = self.post("commands/payout/confirm", {"id":draft["id"]})
+        self.assertEqual((status, result["state"], result["result"]["id"]), (200, "recorded", existing["id"]))
+        self.assertEqual(self.post("commands/payout/confirm", {"id":draft["id"]}), (200, result))
+        self.assertEqual(self.post("commands/payout/discard", {"id":draft["id"]}), (200, result))
+        self.assertEqual(len(self.book.snapshot(self.tenant)["payouts"]), 1)
+        _, next_draft = self.post("commands/payout/prepare", {"terms":terms,"after":draft["id"]})
+        self.assertNotEqual(next_draft["id"], draft["id"])
+        receipt_path = "/commands/payout/" + draft["id"]
+        status, _, body = self.request("GET", self.base + receipt_path, headers=self.owner)
+        self.assertEqual((status, json.loads(body)), (200, result))
+        self.assertEqual(self.request("GET", self.base + receipt_path, headers=self.bearer)[0], 403)
+        other = self.book.create_tenant("Other Merchant")["tenant"]
+        other_path = "/api/v1/workspaces/" + other + receipt_path
+        self.assertEqual(self.request("GET", other_path, headers=self.owner)[0], 404)
+        self.assertEqual(self.post("commands/payout/confirm", {"id":draft["id"]}), (200, result))
+        _, _, body = self.request("GET", self.base + "/commands", headers=self.owner)
+        self.assertEqual(json.loads(body)["payout"], next_draft)
+        self.assertEqual(self.post("commands/payout/discard", {"id":next_draft["id"]})[1]["state"], "discarded")
+        self.assertEqual(self.post("commands/payout/confirm", {"id":next_draft["id"]})[0], 409)
+        self.assertEqual(len(self.book.snapshot(self.tenant)["payouts"]), 1)
+
+    def test_issuer_command_and_effect_commit_together_and_replay(self):
+        self.post("issuer/attest", {"fiat_minor_units":10000,"reference":"draft-reserve"})
+        _, mint = self.post("commands/mint/prepare", {"after":None,
+                            "terms":{"customer":"agent-01","amount":3000000}})
+        issued = self.post("commands/mint/confirm", {"id":mint["id"]})
+        self.assertEqual(issued[0], 200)
+        self.assertEqual(self.post("commands/mint/confirm", {"id":mint["id"]}), issued)
+        terms = {"source":"customer","customer":"agent-01","amount":1000000}
+        _, draft = self.post("commands/redeem/prepare", {"terms":terms,"after":None})
+        with patch("hellabit.console_commands.canonical", side_effect=RuntimeError("synthetic commit interruption")):
+            self.assertEqual(self.post("commands/redeem/confirm", {"id":draft["id"]})[0], 500)
+        state = self.book.snapshot(self.tenant, include_issuer=True)["issuer"]
+        self.assertEqual((state["supply"], state["pending_redemptions"]), (3000000, 0))
+        pending = json.loads(self.request("GET", self.base+"/commands", headers=self.owner)[2])["redeem"]
+        self.assertEqual((pending["id"], pending["state"], pending["terms"]), (draft["id"], "ready", terms))
+        responses = []
+        threads = [threading.Thread(target=lambda: responses.append(
+            self.post("commands/redeem/confirm", {"id":draft["id"]}))) for _ in range(2)]
+        for thread in threads:
+            thread.start()
+        for thread in threads:
+            thread.join(timeout=5)
+        self.assertEqual(len(responses), 2)
+        self.assertEqual(responses[0], responses[1])
+        self.assertEqual(responses[0][0], 200)
+        state = self.book.snapshot(self.tenant, include_issuer=True)["issuer"]
+        self.assertEqual((state["supply"], state["pending_redemptions"]), (2000000, 1000000))
+        self.assertEqual(len(state["redemptions"]), 1)
+
     def test_ops_response_holds_one_snapshot_across_settlement_and_return(self):
         from hellabit.fixtures import SandboxProvider
         from hellabit.operations import Operations

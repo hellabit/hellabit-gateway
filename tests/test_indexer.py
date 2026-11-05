@@ -5,7 +5,7 @@ import fcntl
 import os
 from contextlib import contextmanager
 from hellabit.ledger import Ledger, Error
-from hellabit.indexer import EventIndexer
+from hellabit.indexer import EventIndexer, MAX_BLOCK_EVENTS
 from hellabit.rails import TRANSFER
 
 def h(value): return "0x" + format(value, "064x")
@@ -127,7 +127,8 @@ class IndexerTests(unittest.TestCase):
             n=11 if params[0]=="finalized" else int(params[0],16)
             return {"number":hex(n),"hash":h(n),"parentHash":h(n-1)}
         if method=="eth_getLogs":
-            n=int(params[0]["fromBlock"],16)
+            self.assertEqual(set(params[0]), {"address", "blockHash", "topics"})
+            n=int(params[0]["blockHash"],16)
             return [{"transactionHash":h(n+1000),"logIndex":"0x0","blockNumber":hex(n),
                      "blockHash":h(n),"address":TOKEN,"removed":False,
                      "topics":[TRANSFER,"0x"+FROM[2:].rjust(64,"0"),"0x"+TO[2:].rjust(64,"0")],
@@ -152,3 +153,32 @@ class IndexerTests(unittest.TestCase):
         with self.assertRaisesRegex(Error,"rpc_log_binding_mismatch"):
             self.index.sync(self.tenant,"watched-usdc",bad)
         self.assertEqual(self.index.state(self.tenant,"watched-usdc")["cursor"],9)
+
+    def test_dense_block_is_indexed_and_oversized_response_preserves_cursor(self):
+        binding = "watched-usdc"
+        def dense(method, params, count):
+            result = self.rpc(method, params)
+            if method == "eth_getLogs":
+                return [{**result[0], "logIndex": hex(i)} for i in range(count)]
+            return result
+        with self.assertRaisesRegex(Error, "chain_event_limit"):
+            self.index.sync(self.tenant, binding,
+                            lambda m, p: dense(m, p, MAX_BLOCK_EVENTS + 1), max_blocks=1)
+        def malformed(method, params):
+            result = self.rpc(method, params)
+            return result + [None] if method == "eth_getLogs" else result
+        with self.assertRaisesRegex(Error, "rpc_log_binding_mismatch"):
+            self.index.sync(self.tenant, binding, malformed, max_blocks=1)
+        self.assertEqual(self.index.state(self.tenant, binding)["cursor"], 9)
+        with self.book.db() as db:
+            self.assertEqual(db.execute("SELECT count(*) FROM chain_events").fetchone()[0], 0)
+        state = self.index.sync(self.tenant, binding, lambda m, p: dense(m, p, 1001), max_blocks=1)
+        self.assertEqual((state["cursor"], state["finalized"], state["financial_postings"]), (10, 10, 0))
+        page = self.index.event_page(self.tenant, binding)
+        self.assertEqual(len(page["events"]), 1000)
+        rest = self.index.event_page(self.tenant, binding, cursor=page["next_cursor"])
+        self.assertEqual((len(rest["events"]), rest["complete"]), (1, True))
+        state = self.index.sync(self.tenant, binding, lambda m, p: dense(m, p, MAX_BLOCK_EVENTS), max_blocks=1)
+        self.assertEqual(state["cursor"], 11)
+        with self.book.db() as db:
+            self.assertEqual(db.execute("SELECT count(*) FROM chain_events").fetchone()[0], 1001 + MAX_BLOCK_EVENTS)

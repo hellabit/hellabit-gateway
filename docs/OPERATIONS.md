@@ -13,6 +13,13 @@ python3 scripts/operate.py tick
 
 Select a workspace explicitly with `--tenant WORKSPACE_ID` before the subcommand
 when the database has more than one. Use `--state PATH` for a separate state file.
+
+An authenticated provider receipt that confirms durable acceptance and pins
+the original provider reference moves a payout to `awaiting_settlement`. Its
+hold stays in place while other payouts on the connection can proceed. A
+provisional `pending` receipt or lost reply leaves the outcome unknown. A
+conflicting or reused provider reference preserves the hold and pauses new
+submissions on that connection for reconciliation.
 `tick` first checks one unknown or expired submission using its original provider
 identity. It does not replace an inconclusive payment. Otherwise it processes
 one prepared intent with the separate synthetic provider. It is bounded work;
@@ -31,6 +38,20 @@ the exact hold through a compensating posting; absence is not rejection.
 
 `examples/recover-payment.py` demonstrates acceptance followed by a lost reply,
 then original-identity recovery against an independent synthetic provider.
+
+The owner console stores the reviewed terms of a test payout, issuance, or
+redemption in the workspace. Confirming commits the financial change and its
+receipt together. Reopen the console to read that receipt or resume the same
+unconfirmed draft. Only one draft for each action can await review per workspace.
+Check the payout history if you are upgrading and your previous browser address
+is gone. A saved 0.8 payout key in the same browser can be reviewed and recovered
+with its original terms.
+
+The default launcher saves the loopback port in the ledger on first launch. If
+another process uses it, free that port or choose an explicit `--port`. An
+override leaves the saved address intact. The workspace keeps its drafts and
+receipts even when you open a different address. Retired history without a
+saved port opens at a disposable address for inspection.
 
 ## Encrypted backup and recovery
 
@@ -51,8 +72,12 @@ The rehearsal uses an ephemeral key and removes its temporary recovery files.
 
 Restore authenticates every chunk and checks database integrity before making a
 new destination visible. It never replaces the running database. Version 2
-backups stream bounded 1 MiB chunks and support databases up to 1 GiB; legacy
-version 1 backups remain readable. Status reports capacity and warns at 80 percent.
+backups stream bounded 1 MiB chunks and support databases up to 1 GiB. Legacy
+version 1 backups remain readable. Status reports the remaining size budget and
+minimum working space and warns at 80 percent. A backup checks space on its
+destination volume before taking a snapshot. At the warning, plan capacity and
+prove a restore before growth reaches the limit. Keep the financial history and
+the off-volume recovery copy available through that transition.
 
 Every restored copy starts in quarantine. New holds, financial postings, worker
 claims and external bearer-token reads fail closed, even if the snapshot predates
@@ -219,9 +244,12 @@ python3 scripts/operate.py --tenant WORKSPACE_ID index events --config .private/
 Binding, status and event pages do no network I/O. Continue an event page with
 `--cursor NEXT_CURSOR`. The cursor keeps the first page's finalized block
 boundary. The result reports when that boundary is complete.
-Sync performs bounded read-only RPC calls,
-checks chain ID, processes contract-scoped ERC-20 Transfer logs and persists a
-cursor. It does not sign/broadcast, credit customer balances or certify reserves.
+Sync checks chain ID and requests the bound contract's ERC-20 Transfer logs by
+exact block hash. The provider must support [EIP-234](https://eips.ethereum.org/EIPS/eip-234).
+The CLI accepts up to 4,096 matching events per block and up to 4,000,000 bytes
+per RPC response. An over-limit or failed response leaves that block uncommitted.
+Reader pages still contain up to 1,000 events. The cursor follows the supplied
+RPC view. Signing, balances, and reserves use separate controls and evidence.
 All resolved endpoint addresses must be public and the connection pins a resolved
 address while validating hostname/TLS. No redirects or write RPC methods exist.
 
@@ -251,7 +279,11 @@ Usage ingestion updates an indexed running total in the insertion transaction.
 Invoice close cross-checks the immutable event history before accepting that
 total. Use batch identities for large quantities. The engine remains a bounded
 single-node implementation. The included baseline reports observed local
-latency, database size and metering timing, not a production throughput promise.
+latency, database size and metering timing. It also drains a queued batch
+through a separate synthetic provider store, drops every fifth reply after
+acceptance, and checks that original-identity recovery records one payment per
+command. The report includes queue delay and recovery throughput for this
+local workload.
 
 ## Export the complete financial record
 
@@ -264,6 +296,18 @@ postings, business-command identities, provider observations, later adjustments,
 authorization history and usage records. A terminal checksum covers every
 preceding line. Credentials, lease secrets and payment authority are excluded.
 The file is confidential: it includes customer inputs and financial records.
+
+For a scoped payout reconciliation sheet, export one row per intent:
+
+```sh
+python3 scripts/operate.py --tenant WORKSPACE_ID payout-report --output .private/payout-report.csv
+```
+
+The CSV comes from one ledger snapshot. It records asset and decimal places,
+the original provider reference, requested and held units, settlement, later
+returns and net paid. Match its provider reference against the independent
+statement or provider export. The command writes a private new file and reports
+its checksum. It excludes recipient details and signing credentials.
 It is owner-only, refuses overwrite, and is an audit export rather than a tool
 that restores provider authority or replaces encrypted backups.
 
@@ -314,7 +358,7 @@ reconciliation compares the cached positions and agent budgets with authoritativ
 records. API rate counters use a separate local store; this does not change grant
 or settlement authority.
 
-Before the version 8 upgrade, stop old workers and finish any in-flight payout
+Before the storage upgrade, stop old workers and finish any in-flight payout
 attempts using the existing runtime. The migration refuses a submitting intent.
 After cutover, SQLite rejects writes from already-open older gateways. If both
 legacy and scoped funding records exist for the same movement, migration stops

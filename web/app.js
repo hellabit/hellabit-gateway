@@ -4,7 +4,7 @@ const csrf = $('meta[name=hellabit-csrf]').content;
 const views = ['overview', 'work', 'issuer', 'connections', 'developer'];
 function saved() { try { return JSON.parse(sessionStorage.getItem('hellabit-view') || '{}'); } catch { return {}; } }
 const preference = saved();
-const state = {tenant: preference.tenant || null, data: null, asset: preference.asset || 'CAD', view: views.includes(preference.view) ? preference.view : 'overview', busy: false, keys: [], plan: null, activity:null, allActivity:null, allOperations:false, fundingOpen:false, focusOp:null, resultOp:null};
+const state = {tenant: preference.tenant || null, data: null, asset: preference.asset || 'CAD', view: views.includes(preference.view) ? preference.view : 'overview', busy: false, keys: [], commands: {}, plan: null, activity:null, allActivity:null, allOperations:false, fundingOpen:false, focusOp:null, resultOp:null};
 const invoiceExample={currency:'CAD',items:[{quantity:2,unit_amount_units:1500},{quantity:1,unit_amount_units:500}],tax_units:175,declared_total_units:3675};
 $('#work-input').value=JSON.stringify(invoiceExample,null,2);
 const viewLabels={overview:'Overview',work:'Paid work',issuer:'Issuer lab',connections:'Settlement planning',developer:'Developers'};
@@ -12,7 +12,7 @@ function pendingPurchase(){try{return JSON.parse(sessionStorage.getItem('hellabi
 function savePending(value){try{sessionStorage.setItem('hellabit-purchase-'+state.tenant,JSON.stringify(value));}catch{throw new Error('This browser cannot retain the purchase identity for recovery. No reservation was submitted.');}}
 function clearPending(){try{sessionStorage.removeItem('hellabit-purchase-'+state.tenant);}catch{}}
 const payoutStorageKey = tenant => 'hellabit-payout-'+tenant;
-function pendingPayout(tenant) {
+function legacyPayout(tenant) {
   try {
     const raw=localStorage.getItem(payoutStorageKey(tenant));
     if(raw===null) return null;
@@ -20,7 +20,12 @@ function pendingPayout(tenant) {
     if(value&&typeof value.key==='string'&&typeof value.asset==='string'&&typeof value.recipient==='string'
       &&Number.isSafeInteger(value.amount)&&value.amount>0) return value;
   } catch {}
-  return {unavailable:true};
+  return null;
+}
+function clearRecoveredLegacy(tenant, command) {
+  if(command?.state==='recorded' && command.legacy_key && legacyPayout(tenant)?.key===command.legacy_key) {
+    try { localStorage.removeItem(payoutStorageKey(tenant)); } catch {}
+  }
 }
 function closeMenu(){$('#primary-nav').dataset.open='false';$('#nav-toggle').setAttribute('aria-expanded','false');}
 const esc = value => String(value).replace(/[&<>"']/g, c => ({'&':'&amp;', '<':'&lt;', '>':'&gt;', '"':'&quot;', "'":'&#39;'}[c]));
@@ -37,7 +42,9 @@ const errors = {
   invalid_identifier: 'Use letters, numbers, dots, colons, underscores or hyphens in references.',
   invalid_workspace_name: 'Use 2–60 letters, numbers, spaces or ordinary business-name punctuation.',
   optional_api_tools_not_configured: 'Set up the optional API tools to run encrypted recovery checks.',
-  reconcile_existing_submission: 'Check the original payment in the recovery queue. Its existing hold is preserved.'
+  reconcile_existing_submission: 'Check the original payment in the recovery queue. Its existing hold is preserved.',
+  console_command_changed: 'The saved request changed in another session. Review the current record.',
+  console_command_discarded: 'This draft was discarded. No confirmation was recorded for it.'
 };
 function remember() { try { sessionStorage.setItem('hellabit-view', JSON.stringify({tenant:state.tenant, asset:state.asset, view:state.view})); } catch {} }
 async function api(path, {method='GET', body}={}) {
@@ -115,9 +122,10 @@ async function workspaces(preferred) {
 async function refresh() {
   if(!state.tenant) return;
   const tenant=state.tenant;
-  const [data,keys,readiness,ops]=await Promise.all([api(base()),api(base()+'/keys'),api(base()+'/readiness'),api(base()+'/ops')]);
+  const [data,keys,readiness,ops,commands]=await Promise.all([api(base()),api(base()+'/keys'),api(base()+'/readiness'),api(base()+'/ops'),api(base()+'/commands')]);
   if(tenant!==state.tenant)return;
-  state.data=data;state.keys=keys.keys;state.readiness=readiness;state.ops=ops;
+  state.data=data;state.keys=keys.keys;state.readiness=readiness;state.ops=ops;state.commands=commands;
+  clearRecoveredLegacy(tenant, commands.payout);
   state.claimPage=null;state.claimLookup=null;
   if(!data.assets.some(a => a.id===state.asset)) state.asset='CAD';
   [state.activity,state.allActivity]=await Promise.all([api(base()+'/activity/'+state.asset),state.allOperations?api(base()+'/activity/all'):Promise.resolve(null)]);
@@ -168,11 +176,12 @@ function renderPayouts(){
   if(!payouts.length){$('#payouts').innerHTML='<div class="empty-state">A payout holds merchant proceeds until its settlement is recorded.</div>';return;}
   $('#payouts').innerHTML=`<div class="table-wrap"><table><thead><tr><th>Payout / recipient</th><th>Amounts</th><th>Current outcome</th><th>Action</th></tr></thead><tbody>${payouts.map(p=>{
     const asset=state.data.assets.find(x=>x.id===p.asset),unknown=['unknown','submitting'].includes(p.intent_state);
+    const accepted=p.intent_state==='awaiting_settlement';
     const returned=p.returned_units>0;
-    const label=p.effective_outcome==='fully-returned'?'Test payout fully returned':p.effective_outcome==='partially-returned'?'Test payout partially returned':p.state==='paid'?'Simulated payout recorded':p.state==='failed'?'Payout rejected · Hold returned':unknown?'Outcome unknown · Funds held':'Awaiting simulated settlement';
+    const label=p.effective_outcome==='fully-returned'?'Test payout fully returned':p.effective_outcome==='partially-returned'?'Test payout partially returned':p.state==='paid'?'Simulated payout recorded':p.state==='failed'?'Payout rejected · Hold returned':unknown?'Outcome unknown · Funds held':accepted?'Accepted · Awaiting settlement':'Awaiting simulated settlement';
     const amounts=p.state==='paid'?`<strong>Net paid ${money(p.net_paid_units,asset)}</strong><small class="cell-note">Originally settled ${money(p.original_settled_units,asset)}<br>Returned ${money(p.returned_units,asset)}</small>`:money(p.amount,asset);
     const adjustment=p.latest_adjustment?`<details><summary>Return receipt</summary><dl class="receipt-detail"><dt>Latest return</dt><dd>${money(p.latest_adjustment.amount,asset)}</dd><dt>Recorded</dt><dd>${timestamp(p.latest_adjustment.created)}</dd><dt>Reference</dt><dd>${esc(p.latest_adjustment.reference)}</dd><dt>Connection</dt><dd>${esc(p.latest_adjustment.connection)}</dd><dt>Original settlement</dt><dd>${esc(p.payment_reference)}</dd></dl></details>`:'';
-    const action=p.state==='pending'?(unknown||!p.intent_id?'<button class="quiet" data-jump="connections" data-focus-id="recovery-queue-title">Review original payment ↗</button>':`<button class="quiet" data-merchant-payout="${esc(p.id)}" data-settlement-intent="${esc(p.intent_id)}">Run test settlement ↗</button>`):returned?'Returned amount credited to proceeds':p.state==='paid'?'Test settlement recorded':'Hold returned';
+    const action=p.state==='pending'?(unknown||accepted||!p.intent_id?'<button class="quiet" data-jump="connections" data-focus-id="recovery-queue-title">Review original payment ↗</button>':`<button class="quiet" data-merchant-payout="${esc(p.id)}" data-settlement-intent="${esc(p.intent_id)}">Run test settlement ↗</button>`):returned?'Returned amount credited to proceeds':p.state==='paid'?'Test settlement recorded':'Hold returned';
     return `<tr data-payout-row="${esc(p.id)}"><td class="hash">${esc(p.id.slice(0,16))}…<small class="cell-note">${esc(p.recipient)}</small></td><td class="amount">${amounts}</td><td><span class="pill">${label}</span>${adjustment}</td><td>${action}</td></tr>`;
   }).join('')}</tbody></table></div>`;
 }
@@ -236,6 +245,31 @@ const result = await gateway.delivery(workspace, purchase.id);
   renderJourney(); updateControls(); economics(); jump(state.view);
 }
 function disable(id, disabled, reason) { const element=$('#'+id); element.disabled=state.busy||disabled; if(reason) element.title=reason; else element.removeAttribute('title'); }
+const commandCopy = {
+  payout: {ready:'Review payout terms', recorded:'Payout request recorded', effect:'Confirmation holds proceeds. Check the recovery queue for settlement.'},
+  mint: {ready:'Review test issuance', recorded:'Test issuance recorded', effect:'Confirmation issues these tokens to the named account.'},
+  redeem: {ready:'Review redemption terms', recorded:'Redemption claim recorded', effect:'Confirmation burns these tokens once and creates an unpaid claim.'}
+};
+function showConsoleCommand(action, token, locked) {
+  const command=state.commands[action], draft=command?.state==='ready';
+  const copy=commandCopy[action];
+  $('#'+action+'-controls').hidden=draft;
+  $('#'+action+'-command').hidden=!command || command.state==='discarded';
+  $('#'+action+'-command-actions').hidden=!draft;
+  disable('confirm-'+action,locked);
+  disable('discard-'+action,locked);
+  if(!command || command.state==='discarded') return;
+  const terms=command.terms;
+  const asset=action==='payout'?state.data.assets.find(a=>a.id===terms.asset):token;
+  const party=action==='payout'?'to '+terms.recipient:action==='mint'?'to '+terms.customer:
+    'from '+(terms.customer||({'merchant':'merchant proceeds','platform-fees':'platform fees'})[terms.source]);
+  const reference=command.result?.id || command.result?.request;
+  const status=$('#'+action+'-command-status'), headline=draft?copy.ready:copy.recorded;
+  if(status.textContent!==headline)status.textContent=headline;
+  $('#'+action+'-command-terms').textContent=money(terms.amount,asset)+' '+party+'. '+
+    (draft?(command.legacy_key?'Confirmation reuses the original payout key.':copy.effect):
+      'Reference '+reference+'.');
+}
 function updateControls() {
   $$('button:not([data-view]):not([data-jump]), select, input, textarea').forEach(element=>element.disabled=state.busy||element.dataset.policyDisabled==='true');
   if(!state.data) return;
@@ -257,19 +291,19 @@ function updateControls() {
   disable('reserve',!pending&&(price===undefined||price>a.available),'A valid price and enough available test credits are required.');
   try { amount($('#fund-amount').value,a.decimals); disable('fund',false); } catch { disable('fund',true,'Enter a valid amount to add.'); }
   try { payout=amount($('#payout-amount').value,a.decimals); } catch {}
-  const issuerAsset=a.rail==='issuer', savedPayout=pendingPayout(state.tenant);
+  const issuerAsset=a.rail==='issuer', savedPayout=legacyPayout(state.tenant);
   const payoutAsset=savedPayout&&state.data.assets.find(asset=>asset.id===savedPayout.asset);
-  $('#payout-hint').textContent=savedPayout?.unavailable?'Review the payout record. This browser could not read the saved request.':
-    payoutAsset?'Recover the original request for '+money(savedPayout.amount,payoutAsset)+' to '+savedPayout.recipient+'.':
+  $('#payout-hint').textContent=payoutAsset?'Review the original request for '+money(savedPayout.amount,payoutAsset)+' to '+savedPayout.recipient+'.':
     issuerAsset?'Use redemption in Issuer lab for issued tokens.':payout>a.merchant?
     'Only '+money(a.merchant,a)+' is available. Reduce the request by '+money(payout-a.merchant,a)+'.':
+    !state.commands.payout&&state.data.payouts.length?'Check prior payouts below before confirming a new request.':
     'A payout holds proceeds until settlement is recorded. Refunding paid-out work requires a funded reversal.';
-  $('#payout-amount').disabled=state.busy||Boolean(savedPayout);
-  $('#payout-recipient').disabled=state.busy||Boolean(savedPayout);
-  $('#request-payout').textContent=savedPayout?'Recover original payout ↗':'Request test payout ↗';
+  $('#payout-amount').disabled=state.busy||Boolean(payoutAsset);
+  $('#payout-recipient').disabled=state.busy||Boolean(payoutAsset);
+  $('#request-payout').textContent=payoutAsset?'Review original payout ↗':state.commands.payout?.state==='recorded'?'Review another payout ↗':'Review test payout ↗';
   $('#use-payout-available').hidden=Boolean(savedPayout)||issuerAsset||a.merchant<=0;
   $('#use-payout-available').textContent='Use available: '+money(a.merchant,a);
-  disable('request-payout',savedPayout?!payoutAsset:issuerAsset||payout===undefined||payout>a.merchant||!$('#payout-recipient').value.trim(),
+  disable('request-payout',!payoutAsset&&(issuerAsset||payout===undefined||payout>a.merchant||!$('#payout-recipient').value.trim()),
     'Choose a bank or USDC asset and an amount within merchant proceeds.');
   const locked=issuer.identity_locked||issuer.reserve>0||issuer.liabilities>0;
   for(const id of ['issuer-name','issuer-symbol','issuer-currency']) $('#'+id).disabled=state.busy||locked;
@@ -289,6 +323,7 @@ function updateControls() {
   disable('export-journal',!state.data.journal.some(event=>event.asset===a.id));
   const quarantined=!!state.readiness?.machine_observations.recovery_quarantine;
   const retired=!!state.readiness?.machine_observations.previous_writer_retired;
+  for(const action of Object.keys(commandCopy)) showConsoleCommand(action,token,quarantined||retired);
   $('#recovery-lock').hidden=!quarantined;
   $('#recovery-lock strong').textContent=retired?'Previous primary retired · History only':'Restored snapshot · Financial writes blocked';
   $('#recovery-lock p').textContent=retired?'This history is preserved. Continue on the new handover path with freshly enrolled access. This primary cannot create payments or credentials.':'Inspect these records while commands and provider movements are reconciled. Restoring a database does not transfer payment authority.';
@@ -347,6 +382,7 @@ document.addEventListener('click', event => {
       if(payout.state==='confirmed') notice('Original test payment confirmed. One payout was recorded.');
       else if(payout.state==='failed') notice('The original payment was closed without effect. Its hold was returned.');
       else if(payout.state==='unknown') notice('The outcome is still unknown. The original identity and hold are preserved.');
+      else if(payout.state==='awaiting_settlement') notice('The original payment was accepted and is awaiting settlement. Its hold is preserved.');
       else if(result.processed===false) notice('No new payment was submitted. Review the original payments in the recovery queue.');
       else notice('Original payment checked. Its existing hold is preserved.');
     });
@@ -374,34 +410,56 @@ $('#reserve').onclick=()=>perform(async()=>{
   try{const op=await post('operations',{customer:original.customer,quote:original.quote,key:original.key});clearPending();state.asset=op.asset;state.focusOp=op.id;notice('Reserved '+money(op.amount,selected())+' for '+op.id+'. Not charged. Run the check below to store its result and charge.');}
   catch(error){if(error.code==='quote_expired_or_missing')clearPending();throw error;}
 });
-$('#request-payout').onclick=()=>{
-  const tenant=state.tenant, atClick=pendingPayout(tenant);
-  const asset=selected(), recipient=$('#payout-recipient').value.trim(), input=$('#payout-amount').value;
-  const storageKey=payoutStorageKey(tenant);
-  const submit=async()=>{
-    const saved=pendingPayout(tenant);
-    if(saved?.unavailable||atClick?.unavailable)
-      throw new Error('Check the payout record before changing the saved request.');
-    if(saved&&atClick&&saved.key!==atClick.key)
-      throw new Error('Another original payout is awaiting recovery. Review its terms before continuing.');
-    const command=saved||atClick||{asset:asset.id,amount:amount(input,asset.decimals),recipient,key:uid('merchant-payout')};
-    try { localStorage.setItem(storageKey,JSON.stringify(command)); }
-    catch { throw new Error('This browser could not save the payout identity. No request was submitted.'); }
-    let result;
-    try {
-      result=await api('/api/v1/workspaces/'+tenant+'/payouts',{method:'POST',body:command});
-      if(typeof result.id!=='string'||result.asset!==command.asset||result.amount!==command.amount)
-        throw new Error('The reply did not confirm the payout identity. Recover the original request.');
-    } catch(error) {
-      if(['insufficient_payout_balance','invalid_identifier','invalid_amount','issuer_redemption_required'].includes(error.code)
-        &&pendingPayout(tenant)?.key===command.key) localStorage.removeItem(storageKey);
-      throw error;
-    }
-    if(pendingPayout(tenant)?.key===command.key) localStorage.removeItem(storageKey);
-    notice(result.replayed?'Recovered the original payout. Check its current outcome below.':'Merchant proceeds held for a test payout. Check its settlement in the recovery queue.');
+function bindConsoleCommand(action, reviewButton, getTerms) {
+  $(reviewButton).onclick=async()=>{
+    if(state.busy) return;
+    await perform(async()=>{
+      await post('commands/'+action+'/prepare',{
+        ...getTerms(),after:state.commands[action]?.id||null
+      });
+    });
+    const status=$('#'+action+'-command-status');
+    if(state.commands[action]?.state==='ready' && status.getClientRects().length) status.focus();
   };
-  perform(()=>navigator.locks?navigator.locks.request(storageKey,submit):submit());
-};
+  $('#confirm-'+action).onclick=()=>perform(async()=>{
+    const draft=state.commands[action];
+    if(draft?.state!=='ready') return;
+    let receipt, recovered=false;
+    try {
+      receipt=await post('commands/'+action+'/confirm',{id:draft.id});
+    } catch(error) {
+      if(error.code!=='outcome_unknown') throw error;
+      const original=await api(base()+'/commands/'+action+'/'+encodeURIComponent(draft.id)).catch(()=>null);
+      if(original?.id!==draft.id || original.state!=='recorded')
+        throw new Error('Check the saved request. If it still awaits confirmation, use that same draft.');
+      receipt=original;
+      recovered=true;
+    }
+    if(receipt.id!==draft.id || receipt.state!=='recorded')
+      throw new Error('Review the saved request before trying again.');
+    if(action==='payout') clearRecoveredLegacy(state.tenant, receipt);
+    const headline=commandCopy[action].recorded;
+    notice(headline+'. '+(recovered?'Recovered the receipt after the reply was interrupted. ':'')+
+      (action==='payout'?'Check its settlement in the recovery queue.':
+       action==='redeem'?'The cash claim stays unpaid until settlement is recorded.':
+       'The tokens are available to the named account.'));
+  });
+  $('#discard-'+action).onclick=()=>perform(async()=>{
+    const draft=state.commands[action];
+    if(draft?.state!=='ready') return;
+    const result=await post('commands/'+action+'/discard',{id:draft.id});
+    notice(result.state==='recorded'?commandCopy[action].recorded+'. Review the receipt below.':
+      'Draft discarded. Review a new request when ready.');
+  });
+}
+bindConsoleCommand('payout','#request-payout',()=>{
+  const prior=legacyPayout(state.tenant);
+  if(prior && state.data.assets.some(a=>a.id===prior.asset)) {
+    return {legacy_key:prior.key,terms:{asset:prior.asset,amount:prior.amount,recipient:prior.recipient}};
+  }
+  const a=selected();
+  return {terms:{asset:a.id,amount:amount($('#payout-amount').value,a.decimals),recipient:$('#payout-recipient').value.trim()}};
+});
 window.addEventListener('storage',event=>{
   if(state.tenant&&event.key===payoutStorageKey(state.tenant)) updateControls();
 });
@@ -444,8 +502,13 @@ $('#claim-search').onsubmit=async event=>{
     state.claimLookup=claim;renderRedemptions();updateControls();
   }catch(error){failure(error.message);}
 };
-$('#mint').onclick=()=>perform(async()=>{await post('issuer/mint',{customer:'agent-01',amount:amount($('#mint-amount').value,6),reference:uid('issue')});notice('Test tokens issued to agent-01 within the reserve limit.');});
-$('#redeem').onclick=()=>perform(async()=>{await post('issuer/redeem',{customer:$('#redeem-source').value==='customer'?'agent-01':null,source:$('#redeem-source').value,amount:amount($('#redeem-amount').value,6),reference:uid('redeem')});notice('Tokens burned. The cash claim stays unpaid until settlement is recorded.');});
+bindConsoleCommand('mint','#mint',()=>({
+  terms:{customer:'agent-01',amount:amount($('#mint-amount').value,6)}
+}));
+bindConsoleCommand('redeem','#redeem',()=>{
+  const source=$('#redeem-source').value;
+  return {terms:{source,customer:source==='customer'?'agent-01':null,amount:amount($('#redeem-amount').value,6)}};
+});
 $('#reconcile-form').onsubmit=event=>{event.preventDefault();perform(async()=>{await post('operations/'+$('#reconcile-operation').value+'/'+$('#reconcile-outcome').value,{evidence_reference:$('#evidence-reference').value});$('#reconcile-dialog').close();notice('Your explicit test outcome was recorded. This is not independent settlement verification.');});};
 $('#reconcile').onclick=()=>perform(async()=>{const report=await api(base()+'/reconcile');$('#integrity').textContent=report.ok?`${report.journal_count} records checked. Internal ledger balances and hashes agree. External settlement is not verified by this check.`:'The internal ledger needs investigation.';});
 $$('form[data-enroll]').forEach(form=>form.onsubmit=event=>{event.preventDefault();const fields=Object.fromEntries(new FormData(form)),rail=form.dataset.enroll;if(rail==='usdc')fields.chain_id=84532;perform(async()=>{await post('enroll/'+rail,fields);notice('Preparation saved for '+rail+'. It has not been externally verified or connected.');});});
@@ -484,7 +547,9 @@ function renderReadiness(){
   $('#readiness-unknown').textContent=String(r.machine_observations.unknown_or_overdue_submissions);
   $('#readiness-next').textContent=r.next_action;
   const cap=r.machine_observations.backup_capacity;
-  if($('#recovery-capacity'))$('#recovery-capacity').textContent=`Recovery storage: ${Math.ceil(cap.database_bytes/1048576)} MiB of ${cap.backup_limit_bytes/1048576} MiB · ${cap.status}.`;
+  const capacityLabel={'limit-exceeded':'Snapshot limit exceeded','capacity-warning':'Plan your next verified snapshot now','within-limit':'Within the snapshot limit'}[cap.status];
+  $('#recovery-capacity').textContent=`Recovery storage: ${Math.ceil(cap.database_bytes/1048576)} MiB of ${cap.backup_limit_bytes/1048576} MiB. ${capacityLabel}.`+
+    (cap.has_minimum_working_space?'':' The state volume has less than the minimum working space for a snapshot.');
   $('#readiness-controls').innerHTML=r.external_controls.map(c=>`<li><strong>${esc(c.title)}</strong><span class="pill">${c.status==='reported-unverified'?'Recorded · Review unverified':c.status==='expired'?'Review expired':'External evidence needed'}</span><p>${esc(c.next_action)}</p></li>`).join('');
   renderRecovery();
   updateControls();
@@ -492,22 +557,28 @@ function renderReadiness(){
 function renderRecovery(){
   const queue=state.ops;
   const groups=queue.attention;
-  const rows=queue.intents.filter(row=>['prepared','submitting','unknown'].includes(row.state));
-  const total=['prepared','submitting','unknown'].reduce((count,key)=>count+(queue.counts[key]||0),0);
+  const active=['prepared','submitting','unknown','awaiting_settlement'];
+  const rows=queue.intents.filter(row=>active.includes(row.state));
+  const total=active.reduce((count,key)=>count+(queue.counts[key]||0),0);
   const assetById=id=>state.data.assets.find(asset=>asset.id===id);
   $('#payout-attention').innerHTML=groups.length?groups.map(group=>{
     const held=money(group.held_units,assetById(group.asset));
     return `<div class="rail-row"><div class="rail-info"><strong>${esc(held)} held · ${group.held_count} payout${group.held_count===1?'':'s'}</strong><small>${esc(group.connection)} · Oldest opened ${timestamp(group.oldest_created)}</small></div><span class="pill">Review original outcomes</span></div>`;
-  }).join(''):'<p class="muted">No payouts awaiting evidence. Try a test payout in Paid work.</p>';
+  }).join(''):'<p class="muted">No payouts with an unknown submission outcome.</p>';
   $('#queue-scope').textContent=`Showing ${rows.length} of ${total} active test payments. Unknown outcomes appear first.`;
   $('#execution-queue').innerHTML=rows.length?rows.map(row=>{
     const asset=assetById(row.asset), id=esc(row.id);
     const unknown=row.state==='unknown'||(row.state==='submitting'&&row.lease_until<=queue.observed_at);
+    const accepted=row.state==='awaiting_settlement';
+    const conflict=row.last_error==='provider_reference_conflict';
     const blocked=groups.some(group=>group.connection===row.connection);
-    const status=unknown?'Outcome unknown · Hold preserved':row.state==='submitting'?'Submission in progress':'Prepared · Hold reserved';
+    const status=conflict?'Provider reference conflict · Hold preserved':unknown?'Outcome unknown · Hold preserved':accepted?'Accepted · Awaiting settlement':row.state==='submitting'?'Submission in progress':'Prepared · Hold reserved';
     let action='<p class="fine-print">The hold stays reserved while the worker owns this attempt.</p>';
-    if(unknown){
-      action=`<button class="secondary" data-intent="${id}" data-intent-action="reconcile">Check original payment ↗</button><details><summary>Close without settlement</summary><p class="fine-print">The test provider must prevent a later send before this can release the hold. If it already accepted the original, that payment is recovered instead.</p><button class="quiet" data-intent="${id}" data-intent-action="cancel">Close if never accepted</button></details>`;
+    if(conflict){
+      action='<p class="fine-print">Compare the original reference and provider records before resuming this connection.</p>';
+    }else if(unknown||accepted){
+      action=`<button class="secondary" data-intent="${id}" data-intent-action="reconcile">Check original payment ↗</button>`;
+      if(unknown) action+=`<details><summary>Close without settlement</summary><p class="fine-print">The test provider must prevent a later send before this can release the hold. If it already accepted the original, that payment is recovered instead.</p><button class="quiet" data-intent="${id}" data-intent-action="cancel">Close if never accepted</button></details>`;
     }else if(row.state==='prepared'){
       action=`<div class="readiness-actions"><button class="secondary" data-intent="${id}" data-intent-action="process" data-policy-disabled="${blocked}" ${blocked?'disabled':''}>Run test settlement ↗</button><button class="quiet" data-intent="${id}" data-intent-action="interrupt" data-policy-disabled="${blocked}" ${blocked?'disabled':''}>Test an interrupted reply</button></div>${blocked?'<p class="fine-print">Waiting for an earlier payment on this connection.</p>':''}`;
     }

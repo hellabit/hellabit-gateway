@@ -17,6 +17,7 @@ await context.route('**/*',route=>{const target=new URL(route.request().url());i
 const page=await context.newPage();page.on('pageerror',e=>errors.push(e.message));page.on('console',m=>{if(m.type()==='error')errors.push(m.text());});
 async function idle(){await page.waitForFunction(()=>document.querySelector('#main').getAttribute('aria-busy')!=='true');}
 async function click(selector){await page.locator(selector).click();await idle();}
+async function command(review,action){await click(review);await click('#confirm-'+action);}
 async function capture(filename){await page.evaluate(()=>window.scrollTo({top:0,left:0,behavior:'instant'}));await page.screenshot({path:path.join(output,filename),fullPage:true});}
 async function snapshot(){const response=await context.request.get('/api/v1/workspaces/'+await page.locator('#workspace-select').inputValue());assert.equal(response.status(),200);return response.json();}
 const asset=(s,rail)=>s.assets.find(a=>a.rail===rail);
@@ -63,34 +64,45 @@ try{
  await click(`[data-op="${op}"][data-action="resolve"]`);await page.selectOption('#reconcile-outcome','reconcile-release');await page.fill('#evidence-reference','test-no-billable-output-01');await click('#reconcile-form button[type=submit]');
  check('Explicit reconciliation releases the held budget',asset(await snapshot(),'bank').held===0);
  await click('#reserve');data=await snapshot();op=newest(data).id;await click(`[data-op="${op}"][data-action="run"]`);
- await click('#request-payout');data=await snapshot();const payout=data.payouts[0];
+ await command('#request-payout','payout');data=await snapshot();const payout=data.payouts[0];
  check('Merchant payout reserves proceeds',payout.state==='pending'&&asset(data,'bank').merchant===49);
  await click(`[data-merchant-payout="${payout.id}"]`);data=await snapshot();check('Outbound test settlement closes payout',data.payouts[0].state==='paid');
  check('A paid-out merchant balance disables an unfunded refund',await page.locator(`[data-op="${op}"][data-action="refund"]`).isDisabled()&&await page.getByText('Proceeds already paid out. A funded reversal is required.',{exact:true}).count()===1);
  check('Oversize payout explains the exact shortfall',(await page.locator('#payout-hint').textContent()).includes('0.01 CAD'));
  await click('#use-payout-available');check('Use available changes the payout only after an explicit action',await page.locator('#payout-amount').inputValue()==='0.49'&&!(await page.locator('#request-payout').isDisabled()));await page.fill('#payout-amount','0.50');
  const priorPayouts=new Set((await snapshot()).payouts.map(p=>p.id));
- const payoutRoute=/\/api\/v1\/workspaces\/[^/]+\/payouts$/;
- const payoutCommands=[];
+ const payoutRoute=/\/api\/v1\/workspaces\/[^/]+\/commands\/payout\/confirm$/;
+ let confirmRequests=0;
  await page.route(payoutRoute,async route=>{
-   if(route.request().method()!=='POST')return route.continue();
-   payoutCommands.push(route.request().postDataJSON());
+   confirmRequests++;
    const response=await route.fetch();
-   return payoutCommands.length===1?route.fulfill({response,body:'incomplete-json'}):route.fulfill({response});
+   return route.fulfill({response,body:'incomplete-json'});
  });
  await page.fill('#payout-amount','0.20');await click('#request-payout');
+ check('The review shows fixed payout terms before any new hold',
+   (await page.locator('#payout-command-terms').textContent()).includes('0.20 CAD')
+   && (await snapshot()).payouts.length===priorPayouts.size);
+ await page.locator('#payout-command').screenshot({path:path.join(output,'payout-review-desktop.png')});
+ await page.setViewportSize({width:390,height:844});
+ check('Payout review remains contained and actionable on mobile',
+   await page.locator('#confirm-payout').isVisible()&&await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth));
+ await page.locator('#payout-command').screenshot({path:path.join(output,'payout-review-mobile.png')});
+ await page.setViewportSize({width:1440,height:1100});
+ await page.evaluate(()=>localStorage.clear());
+ await page.reload();await page.locator('#confirm-payout').waitFor({state:'visible'});await idle();
+ check('Reload with empty browser storage retains the same prepared payout',
+   (await page.locator('#payout-command-terms').textContent()).includes('0.20 CAD')
+   && !(await page.locator('#payout-amount').isVisible()));
+ await click('#confirm-payout');
  const firstRecovery=(await snapshot()).payouts.find(p=>!priorPayouts.has(p.id));priorPayouts.add(firstRecovery.id);
- await page.reload();await page.locator('#work-asset').waitFor({state:'visible'});await idle();
- check('Reload retains a lost payout request and protects its original terms',
-   (await page.locator('#request-payout').textContent()).includes('Recover original payout')
-   && (await page.locator('#payout-hint').textContent()).includes('0.20 CAD')
-   && await page.locator('#payout-amount').isDisabled());
- await click('#request-payout');
- check('Recovering after a lost HTTP reply replays one payout instead of creating another',
-   payoutCommands.length===2&&JSON.stringify(payoutCommands[0])===JSON.stringify(payoutCommands[1])
-   &&(await snapshot()).payouts.every(p=>priorPayouts.has(p.id)));
+ check('Interrupted HTTP confirmation recovers one payout by its saved receipt',
+   confirmRequests===1&&(await page.locator('#action-message').textContent()).includes('Recovered the receipt')
+   && (await page.locator('#payout-command-terms').textContent()).includes(firstRecovery.id));
+ await page.reload();await page.locator('#payout-command').waitFor({state:'visible'});await idle();
+ check('A recorded payout reopens with its receipt and no confirm control',
+   !(await page.locator('#confirm-payout').isVisible())&&(await snapshot()).payouts.every(p=>priorPayouts.has(p.id)));
  await page.unroute(payoutRoute);await page.fill('#payout-amount','0.20');
- await click('#request-payout');const secondRecovery=(await snapshot()).payouts.find(p=>!priorPayouts.has(p.id));
+ await command('#request-payout','payout');const secondRecovery=(await snapshot()).payouts.find(p=>!priorPayouts.has(p.id));
  check('An explicit new payout may use the same terms after recovery',
    Boolean(secondRecovery)&&secondRecovery.id!==firstRecovery.id&&secondRecovery.amount===firstRecovery.amount);
  await nav('connections');
@@ -126,7 +138,7 @@ try{
  check('Reload preserves the exact selected payment asset',await page.locator('#work-asset').inputValue()===usdc.id);
  await nav('issuer');await page.fill('#issuer-name','Example Institution Dollar');await page.fill('#issuer-symbol','EXUSD');await click('#issuer-config button[type=submit]');
  check('Issuance is disabled until current reserve evidence exists',await page.locator('#mint').isDisabled());
- await click('#attest');await click('#mint');data=await snapshot();
+ await click('#attest');await command('#mint','mint');data=await snapshot();
  await page.fill('#observed-reserve','4.00');await click('#attest-balance');
  check('An observed shortfall is visible in fiat units and disables issuance',(await snapshot()).issuer.observed_reserve_minor_units===400&&await page.locator('#mint').isDisabled()&&(await page.locator('#reserve-observation').textContent()).includes('4.00 USD')&&(await page.locator('#issuer-metrics').textContent()).includes('Issuance paused'));
  await capture('reserve-contradiction-desktop.png');
@@ -137,13 +149,25 @@ try{
  check('Full reserve refresh covers the complete balance without adding a deposit',(await snapshot()).issuer.reserve===100000000&&(await page.locator('#action-message').textContent()).includes('complete test reserve balance'));
  check('White-label issuer has independent identity and reserve limit',data.issuer.symbol==='EXUSD'&&data.issuer.supply===10000000&&data.issuer.reserve===100000000);
  check('Used currency identity is visibly fixed and reserve expiry is shown',await page.locator('#save-issuer').isDisabled()&&await page.locator('#issuer-name').isDisabled()&&(await page.locator('#issuer-metrics').textContent()).includes('expires'));
- await click('#redeem');data=await snapshot();let redemption=data.issuer.redemptions[0];
+ const redemptionRoute=/\/api\/v1\/workspaces\/[^/]+\/commands\/redeem\/confirm$/;
+ let redemptionRequests=0;
+ await page.route(redemptionRoute,async route=>{
+   redemptionRequests++;
+   const response=await route.fetch();
+   return route.fulfill({response,body:'incomplete-json'});
+ });
+ await command('#redeem','redeem');data=await snapshot();let redemption=data.issuer.redemptions[0];
+ check('Interrupted redemption reply recovers the original burn and claim',
+   redemptionRequests===1&&data.issuer.redemptions.length===1
+   && (await page.locator('#redeem-command-terms').textContent()).includes(redemption.id)
+   && !(await page.locator('#confirm-redeem').isVisible()));
+ await page.unroute(redemptionRoute);
  check('Redemption preserves the unpaid cash claim',data.issuer.supply===9000000&&data.issuer.pending_redemptions===1000000);
  await click(`[data-payout="${redemption.id}"]`);data=await snapshot();
  check('Verified test payout closes claim and reduces reserves',data.issuer.pending_redemptions===0&&data.issuer.reserve===99000000);
  check('Reserve records do not claim actual fiat backing',data.issuer.real_reserves_verified===false&&data.live_payments_enabled===false);
  await nav('work');await page.selectOption('#work-asset','issued:'+data.workspace.id);await page.fill('#job-amount','1.00');await click('#reserve');data=await snapshot();op=newest(data).id;await click(`[data-op="${op}"][data-action="run"]`);
- await nav('issuer');await page.selectOption('#redeem-source','merchant');await page.fill('#redeem-amount','0.99');await click('#redeem');data=await snapshot();redemption=data.issuer.redemptions[0];
+ await nav('issuer');await page.selectOption('#redeem-source','merchant');await page.fill('#redeem-amount','0.99');await command('#redeem','redeem');data=await snapshot();redemption=data.issuer.redemptions[0];
  check('Merchant token proceeds can become a separately identified redemption claim',redemption.source==='merchant'&&redemption.amount===990000&&redemption.state==='pending');
  await click(`[data-payout="${redemption.id}"]`);data=await snapshot();
  check('Merchant redemption completes without losing its remaining token balance',data.issuer.pending_redemptions===0&&asset(data,'issuer').merchant===9000);

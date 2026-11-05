@@ -122,6 +122,9 @@ class Connection(sqlite3.Connection):
 def bind_gateway_writer(db):
     """Register the storage protocol required by the ledger's write triggers."""
     db.create_function("hellabit_write_epoch_8", 0, lambda: 8)
+    db.create_function("hellabit_write_epoch_9", 0, lambda: 9)
+    db.create_function("hellabit_write_epoch_10", 0, lambda: 10)
+    db.create_function("hellabit_write_epoch_11", 0, lambda: 11)
     return db
 
 

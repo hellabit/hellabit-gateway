@@ -46,6 +46,7 @@ def main():
     commands=parser.add_subparsers(dest="command",required=True)
     commands.add_parser("status");commands.add_parser("drill")
     history=commands.add_parser("export");history.add_argument("--output",type=Path,required=True)
+    report=commands.add_parser("payout-report");report.add_argument("--output",type=Path,required=True)
     tick=commands.add_parser("tick");tick.add_argument("--intent")
     reconcile=commands.add_parser("reconcile");reconcile.add_argument("--intent",required=True)
     packet=commands.add_parser("packet");packet.add_argument("--output",type=Path,required=True)
@@ -91,6 +92,8 @@ def main():
             from hellabit.recovery import resume_sealed
             result=resume_sealed(args.input,owner_file(args.key_file,32),SandboxProvider(args.provider_state,require_existing=True),args.output)
         else:
+            if args.command=="payout-report" and not args.state.is_file():
+                raise Error("payout_report_state_required",404)
             book=Ledger(args.state)
             if args.command=='recover-handover':
                 from hellabit.recovery import handover
@@ -113,6 +116,9 @@ def main():
                 elif args.command=="export":
                     from hellabit.history import export_history
                     result=export_history(book,tenant,args.output)
+                elif args.command=="payout-report":
+                    from hellabit.history import export_payout_report
+                    result=export_payout_report(book,tenant,args.output)
                 elif args.command=="packet":
                     packet=Readiness(book).packet(tenant);_write_new(args.output,canonical(packet).encode())
                     result={"packet_written":True,"identity_details_included":False,"legal_determination_included":False}
@@ -163,7 +169,7 @@ def main():
                             raise Error("invalid_principal_grant_fields",400)
                         result=authority.change_grant(tenant,args.principal,args.action,args.expected_version,**grant)
                 elif args.command=="index":
-                    from hellabit.indexer import EventIndexer,evm_address
+                    from hellabit.indexer import EventIndexer,MAX_LOG_RESPONSE_BYTES,evm_address
                     from hellabit.rpc import ReadOnlyRpc,_strict_object,_invalid_constant
                     cfg=json.loads(owner_file(args.config),object_pairs_hook=_strict_object,parse_constant=_invalid_constant)
                     required={"binding","chain_id","contract","start_block","endpoint","allowed_hosts"}
@@ -183,7 +189,8 @@ def main():
                         if args.action=="events":
                             result=projection.event_page(tenant,cfg["binding"],cursor=args.cursor,limit=args.limit)
                         else:
-                            rpc=ReadOnlyRpc(cfg["endpoint"],allowed_hosts=cfg["allowed_hosts"],chain_id=cfg["chain_id"])
+                            rpc=ReadOnlyRpc(cfg["endpoint"],allowed_hosts=cfg["allowed_hosts"],chain_id=cfg["chain_id"],
+                                            max_bytes=MAX_LOG_RESPONSE_BYTES)
                             synced=projection.sync(tenant,cfg["binding"],rpc,args.max_blocks)
                             result={k:synced[k] for k in ("chain_id","cursor","finalized","halted","financial_postings")}
                 elif args.command in ("tick","reconcile","cancel-unknown"):
