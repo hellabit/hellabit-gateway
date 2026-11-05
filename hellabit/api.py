@@ -144,7 +144,7 @@ class Api:
             fields(("customer","quote","key"))
             if principal["role"]=="agent" and body["customer"]!=principal["customer"]:
                 raise Error("customer_forbidden",403)
-            return book.reserve(tenant,body["customer"],body["quote"],body["key"])
+            return book.reserve(tenant,body["customer"],body["quote"],body["key"],actor=principal)
         if method=="POST" and tail=="operations/lookup":
             fields(("key",));operation=book.lookup_operation(tenant,body["key"])
             if principal["role"]=="agent" and operation["customer"]!=principal["customer"]:
@@ -154,7 +154,7 @@ class Api:
             fields(());id_=identifier(tail.split("/")[1]);operation=book.operation(tenant,id_)
             if principal["role"]=="agent" and operation["customer"]!=principal["customer"]:
                 raise Error("customer_forbidden",403)
-            return book.run_report(tenant,id_)
+            return book.run_report(tenant,id_,actor=principal)
         if method=="POST" and tail.startswith("operations/") and tail.endswith("/refund") and tail.count("/")==2:
             if principal["role"]!="merchant":raise Error("merchant_scope_required",403)
             fields(());return book.refund(tenant,identifier(tail.split("/")[1]))

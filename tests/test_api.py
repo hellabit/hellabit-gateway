@@ -6,6 +6,9 @@ import tempfile
 import time
 import unittest
 import threading
+import os
+import subprocess
+import sys
 from unittest.mock import patch
 import jwt
 from cryptography.hazmat.primitives import serialization
@@ -18,6 +21,39 @@ from hellabit.rails import SandboxBank
 ISSUER,AUDIENCE="https://identity.example.invalid","hellabit-api"
 
 class ApiTests(unittest.IsolatedAsyncioTestCase):
+    async def test_agent_policy_gates_concurrent_budgets_and_exact_approvals(self):
+        root=Path(__file__).resolve().parents[1];base='/api/v1/workspaces/'+self.tenant
+        for asset in ('CAD','USD'):SandboxBank(self.book).fund(self.tenant,'agent-01',asset,500,'agent-funding')
+        grant=self.identity.enroll(self.tenant,'budget-agent','agent',int(time.time())+3600,customer='agent-01')
+        token=self.token('budget-agent')
+        quote=lambda amount,asset='CAD':self.book.create_quote(self.tenant,asset,amount,1)['quote']
+        async def purchase(q,key):return await self.request('POST',base+'/operations',{'customer':'agent-01','quote':q,'key':key},token=token)
+        q=quote(60)
+        self.assertEqual((await purchase(q,'before-policy'))[1]['error'],'agent_spending_policy_required')
+        def cli(*args):
+            result=subprocess.run([sys.executable,str(root/'scripts/operate.py'),'--state',str(self.book.path),'--tenant',self.tenant,'agent-policy',args[0],'--principal',grant['id'],*args[1:]],capture_output=True,text=True,timeout=10,env={'PATH':os.defpath,'PYTHONDONTWRITEBYTECODE':'1'})
+            self.assertEqual(result.returncode,0,result.stderr+result.stdout);return json.loads(result.stdout)['result']
+        terms={'asset':'CAD','resource':'report','recipient':'workspace-merchant','per_purchase':100,'daily':100,'approval_above':70,'expires':int(time.time())+1800}
+        path=Path(self.tmp.name)/'agent-policy.json';path.write_text(json.dumps(terms));path.chmod(0o600)
+        self.assertEqual(cli('set','--file',str(path),'--expected-version','0')['version'],1)
+        self.assertEqual((await purchase(quote(10,'USD'),'wrong-asset'))[1]['error'],'agent_purchase_scope_forbidden')
+        responses=await asyncio.gather(purchase(q,'race-a'),purchase(q,'race-b'))
+        self.assertEqual(sorted(r[0] for r in responses),[200,403]);self.assertIn('agent_daily_limit_exceeded',[r[1].get('error')for r in responses])
+        terms['approval_above']=20;path.write_text(json.dumps(terms))
+        cli('set','--file',str(path),'--expected-version','1')
+        q=quote(30)
+        self.assertEqual((await purchase(q,'approved-command'))[1]['error'],'exact_agent_purchase_approval_required')
+        cli('approve','--quote',q,'--key','approved-command')
+        self.assertEqual((await purchase(q,'substituted-command'))[1]['error'],'exact_agent_purchase_approval_required')
+        status,row=await purchase(q,'approved-command');self.assertEqual(status,200)
+        self.assertTrue((await purchase(q,'approved-command'))[1]['replayed'])
+        # Agent cannot spend a merchant's reservation or execute a superseded one.
+        unowned=self.book.reserve(self.tenant,'agent-01',quote(1),'merchant-reservation')
+        self.assertEqual((await self.request('POST',base+'/operations/'+unowned['id']+'/run',{},token=token))[1]['error'],'agent_reservation_not_owned')
+        cli('set','--file',str(path),'--expected-version','2')
+        self.assertEqual((await self.request('POST',base+'/operations/'+row['id']+'/run',{},token=token))[1]['error'],'agent_reservation_authority_changed')
+        self.assertTrue(self.book.reconcile(self.tenant)['ok'])
+
     async def test_revocation_after_route_admission_is_rechecked_inside_financial_transaction(self):
         base='/api/v1/workspaces/'+self.tenant
         SandboxBank(self.book).fund(self.tenant,'agent-01','CAD',100,'commit-guard-funding')

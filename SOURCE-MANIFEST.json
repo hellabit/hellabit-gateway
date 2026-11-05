@@ -23,7 +23,7 @@
     {
       "bytes": 12146,
       "path": "DEPENDENCIES.json",
-      "sha256": "053b9bf855b32dac45f99a08c738329ce5a655e61a6fe05ee5af79a05763e454"
+      "sha256": "86329055c86241341f7c96a1c36c24c1fb9451028ef371121d30700b48ec0941"
     },
     {
       "bytes": 11358,
@@ -36,14 +36,14 @@
       "sha256": "e670cb40fc9b52635defe19e7daf7305102db932eba8018e17e42f2f9daa36aa"
     },
     {
-      "bytes": 2554,
+      "bytes": 2586,
       "path": "PUBLIC_FILES.json",
-      "sha256": "4ac3f72047ac6a13ad86fadbf9191ea70212ebddfe572019cbc9302e3d2d4667"
+      "sha256": "bd648550e0ab7f8728a312a41bcd2d1bca876ad87daac29877486d3f8fa3c691"
     },
     {
-      "bytes": 8497,
+      "bytes": 8715,
       "path": "README.md",
-      "sha256": "badb8436f41b020c16e9eb0939d186fb7941c675055dfad6d93345982a6ef65c"
+      "sha256": "aaa1fb6873c0388764df62b192e5fd05ef894a7830fec7cb3d8efa660d76c5db"
     },
     {
       "bytes": 5767,
@@ -53,22 +53,22 @@
     {
       "bytes": 211,
       "path": "VERIFIED.json",
-      "sha256": "6f497d7b6f7214290bc9185cce7daf049c303e9d66ab30c5ccbdb9a825fc8dac"
+      "sha256": "2fbb7230c167aca61de0df9b648e582bbe50d29562ed51143d1d6d501711b72e"
     },
     {
-      "bytes": 46157,
+      "bytes": 49479,
       "path": "compiled/AttestedStablecoin.json",
-      "sha256": "13a1958a792e455b88d64fc31646383db1750b76caa8b26c191ebff116eabf55"
+      "sha256": "6ab26dc954f9446b5be4685af8ab84dbbfdfde491599ee1b7f2250a8d7855dd2"
     },
     {
       "bytes": 16367,
       "path": "compiled/PaymentRouter.json",
-      "sha256": "ec8d08bcb9d25f7f5b37266c8f060426466fcf1d14cf7067c4c31de7c3b56626"
+      "sha256": "5fa5d04cacc9fad8ef5614270d9c4b1af492a7861099219012536114bac9056e"
     },
     {
-      "bytes": 5053,
+      "bytes": 6057,
       "path": "contracts/AttestedStablecoin.sol",
-      "sha256": "36302816da51ad30dc434ffa1d8ca8c18ea6993fe1c10a628b8490549fa801d9"
+      "sha256": "a476bd6087659e193bada71d25092bff7a1cc99c06ede6df02c7dfa5cba8902a"
     },
     {
       "bytes": 2709,
@@ -86,9 +86,9 @@
       "sha256": "3b46157a07f38e833f06e7ef264fbf83e61ce29658f4c2d6a6cace5fac1a6a99"
     },
     {
-      "bytes": 7277,
+      "bytes": 7962,
       "path": "docs/API.md",
-      "sha256": "1a75467ceb5dc2e7728b029f22b05c7d37765572e2557d13667da4bd28db689f"
+      "sha256": "912ddeac44f6433f5ddb7e6cf7deebfc45c8d5ecf37f7a8b9caf721fc34a2dad"
     },
     {
       "bytes": 5196,
@@ -96,9 +96,9 @@
       "sha256": "8d008643a4d7bffabf5d8c6daf5717ca51d8fbd9d012d05b4ba74e6854a70765"
     },
     {
-      "bytes": 4147,
+      "bytes": 4562,
       "path": "docs/CONFORMANCE.md",
-      "sha256": "f4406baa54424ac4ec443846a3c137330a1b35ff9031e6f084ee2742889bcb83"
+      "sha256": "eda1e632909936d19bb9342a34b169c4290eebac6aa1a1b74fa2150dea835152"
     },
     {
       "bytes": 2426,
@@ -116,19 +116,19 @@
       "sha256": "1281dbbff24a3128fc874df049bc47a2dc1f9183f29da5f7fb6fdc68f9fc9918"
     },
     {
-      "bytes": 2547,
+      "bytes": 2967,
       "path": "docs/ISSUERS.md",
-      "sha256": "aae608d8e3de38e84cee17d023d1f7fbde2b3839fd79fa9d6809f294d790a47a"
+      "sha256": "80e5e9f5fea8595e817c5724dd7c2c9acadd0bd16f1deb7982b8fc8a7e663575"
     },
     {
-      "bytes": 2527,
+      "bytes": 4594,
       "path": "docs/OPERATING_ROLE.md",
-      "sha256": "758bc9ea6060329bf1683ac368f84a40414b7c41c482c984bef20ebab568a6f4"
+      "sha256": "dcfd10b41b74caaefb1daf91a7e1257082784471a40bd0442e5a0090924e3839"
     },
     {
-      "bytes": 14092,
+      "bytes": 16059,
       "path": "docs/OPERATIONS.md",
-      "sha256": "1410b88a094f8008d91f5374dadaf1f79d54c721531980efb763660e23e4dd8d"
+      "sha256": "52646cb6c4b7daeb3ee1722b63c66417aca693ce4ade1f2c73e66618e3371a47"
     },
     {
       "bytes": 3495,
@@ -153,12 +153,17 @@
     {
       "bytes": 107,
       "path": "hellabit/__init__.py",
-      "sha256": "bd0bacc4002593286ab220d3b4ab0d65ad32934934f49f27421b9b1cb3c6f90f"
+      "sha256": "c69de49d4224e7e0c9ad0d47fefd6c20308134ce167cd2934d481c5692bf0219"
     },
     {
-      "bytes": 13278,
+      "bytes": 7901,
+      "path": "hellabit/agent_policy.py",
+      "sha256": "5ef12d0fcf3f24c9be0ee2dbe570e9837cb1094d51754c832c5bcbabdf1bcf40"
+    },
+    {
+      "bytes": 13310,
       "path": "hellabit/api.py",
-      "sha256": "e207e7d1897ae5999a18ea54c5e2ca17b7f3b98e2555b90c16141176fe9e4833"
+      "sha256": "3635ef0efd341350f44bf7da7ece37b5e450b649f9176cee2d144949236d1a89"
     },
     {
       "bytes": 10288,
@@ -166,9 +171,9 @@
       "sha256": "f0799cd3a8e27afb98680077a9ed0853d892eb666170a3b12edc96568b8884f4"
     },
     {
-      "bytes": 2167,
+      "bytes": 2247,
       "path": "hellabit/control.py",
-      "sha256": "0bd3368bb956e4896cd7020f7db04bcdab84fdbc954dc1ccb4ab1f82251a7b69"
+      "sha256": "a6c07e2e24fc87e564e1749cc91e5eb317d15bdc550e95843568caa1c7a7f0b8"
     },
     {
       "bytes": 2491,
@@ -176,24 +181,24 @@
       "sha256": "23a1bfeb7ad6479c9000850241bd76aa9dd501c1490a3eafeeb0425c287fb043"
     },
     {
-      "bytes": 404,
+      "bytes": 569,
       "path": "hellabit/events.py",
-      "sha256": "853fec883b58661daab25f81cbdd13e2132440aad1ada059affce0386705cadb"
+      "sha256": "4ea2b8dabff9fc62a620f2a5d6bb76e580242fb7d3ae50362fd05a98037731be"
     },
     {
-      "bytes": 5965,
+      "bytes": 9997,
       "path": "hellabit/fixtures.py",
-      "sha256": "ab400b98b036d2cd62f2dd5b12b31206f490cbb111a62e7cc1ef0c6a85b067fe"
+      "sha256": "f38244b37356d3bf3f64e5d00fdb826695c964742c682a71a29191821f026635"
     },
     {
-      "bytes": 3355,
+      "bytes": 3462,
       "path": "hellabit/history.py",
-      "sha256": "a5b48abc923305d51ad3b91d6f98041de7ecee6422c5f2da5d6df23f8171858b"
+      "sha256": "20c1633d156567e504017ac401bf5eef770b4d2d92e2a1f68e5659df3243fc75"
     },
     {
-      "bytes": 13216,
+      "bytes": 14449,
       "path": "hellabit/identity.py",
-      "sha256": "cabe371325e537ea780b0abdcbfc393d499288113b49c149dad13c2af55fd423"
+      "sha256": "2b5e44123b755b2c155109d4c1383d0d2f89c5a9159917c886f288e799d21a93"
     },
     {
       "bytes": 6298,
@@ -206,14 +211,14 @@
       "sha256": "d8346b6272000d3d422262925b4f656595a6ff4b01dbb9bfc53207caf06c9c63"
     },
     {
-      "bytes": 12320,
+      "bytes": 14550,
       "path": "hellabit/issuer.py",
-      "sha256": "0097f06732a8eca5116534fa3a3a824ffc85bc112b201d73dc5cadd073641c1e"
+      "sha256": "b9b0583a84ab5c952a630dc88b5a8b0bd1c8b1e3244c07ea2738127369038ce0"
     },
     {
-      "bytes": 36431,
+      "bytes": 38881,
       "path": "hellabit/ledger.py",
-      "sha256": "1e6377e79d7ecc605df4e6ee00f3a6c1e355995ed2c897d10b69519243e15df5"
+      "sha256": "4f6eed93e101ae14ea346d03f105824329ffc9fdf7b3e3d41dcd4ca0a5be284d"
     },
     {
       "bytes": 9063,
@@ -221,14 +226,14 @@
       "sha256": "9ba5844139b216201b9c797073594da6e28324548cb8c0043e1e99c77e2ab0fb"
     },
     {
-      "bytes": 8249,
+      "bytes": 11068,
       "path": "hellabit/migrations.py",
-      "sha256": "8441eb31e78f5ee87411ac82c7277cc32f8ee4bc0deed7a340675148ddc2d7a6"
+      "sha256": "97af69719934e5fdad3edf93fa3231321590eec65a410b6f531810270a5d7463"
     },
     {
-      "bytes": 21791,
+      "bytes": 22160,
       "path": "hellabit/operations.py",
-      "sha256": "997ed183b819b9d3293e9182b28c17a4ae827f0ea5d0b53ce3dcc3138e6eb0e8"
+      "sha256": "e41b74dbdc7cd7cf81bf0aae693019d638f5afa3380a77b7b2c98bff7fa21676"
     },
     {
       "bytes": 1682,
@@ -236,9 +241,9 @@
       "sha256": "f61316ae09005b15c7855659387c127174b25baca99c9b3994b1dc956c23a691"
     },
     {
-      "bytes": 5837,
+      "bytes": 6168,
       "path": "hellabit/payouts.py",
-      "sha256": "dd0139124fd7a87fec74559d9aacf21f5c939b1af74f76109ce2be114d564f73"
+      "sha256": "8b94a32a963033815c4a52d8d719d1727b2304e55e5e3de3753591dc33b2b091"
     },
     {
       "bytes": 10597,
@@ -246,14 +251,14 @@
       "sha256": "818242f2e07934d0e3f5dbce908b5acb0aeced01f653cd2342503d6bc808ffda"
     },
     {
-      "bytes": 12036,
+      "bytes": 12426,
       "path": "hellabit/readiness.py",
-      "sha256": "a8d52ed224ec7177d27c9e65f6d3af6ef12e2c1b9cf42a5e4c882d7fc32ab107"
+      "sha256": "ef6745d15a978e44aa218a7171f08e90fa3bf024b4cd4ca2e7a26aa25a6ddbf1"
     },
     {
-      "bytes": 8172,
+      "bytes": 20153,
       "path": "hellabit/recovery.py",
-      "sha256": "c2c4f6364a5f7ecf7b517dd157dbb8cab6e8c9bc5443681568155ce842a3ec98"
+      "sha256": "c259ab0fd25ac3bfdbd5fd6a83cff919374d3fb696bf9cb8f8dba827ae6dd43e"
     },
     {
       "bytes": 9310,
@@ -261,9 +266,9 @@
       "sha256": "df9106f2820363b2b0d08a3ddcb1af46788da2cf1cde70ce89a2fc2a550e2c27"
     },
     {
-      "bytes": 20773,
+      "bytes": 19862,
       "path": "hellabit/server.py",
-      "sha256": "a393e7de8738f9659552e0b581a70aced267ded151eedbfc0bf0f399653eadcc"
+      "sha256": "77c81e564d29e715163f48d4fc4e9f8c4a825a6c9cf70e7f71eafeb57d6ec858"
     },
     {
       "bytes": 3002,
@@ -278,12 +283,12 @@
     {
       "bytes": 18581,
       "path": "package-lock.json",
-      "sha256": "75bdd025f1b7df18cd0c66532b45e4fa85afdd19b6b3f3aa6e6ba2d8e59dc508"
+      "sha256": "f1385a389fbdd8d23b813f579e0b48070beab765703bf84e8dd1f7f131541cc3"
     },
     {
       "bytes": 730,
       "path": "package.json",
-      "sha256": "a50c037948d51dc18c81ac13ebeb3bcd6a6476feee6e13450ccc23cf8de56329"
+      "sha256": "909478fae9770c0d6d1dbdd518be9fea7e88bca74ede0d144820210aebb2d795"
     },
     {
       "bytes": 14050,
@@ -301,14 +306,14 @@
       "sha256": "a386d7142d44ff64b51e47f0a78b2c6171bc34accfa765e181df10eda2cacdd9"
     },
     {
-      "bytes": 30449,
+      "bytes": 31323,
       "path": "scripts/browser-proof.mjs",
-      "sha256": "b4ef854bb787edc83a3e1ab2be710e78a3c74223da5effe711a9d0979b40493e"
+      "sha256": "e8773ff56880ec2a872d23d75e4339232137f003cf478f74be37fc4bce9817a4"
     },
     {
-      "bytes": 12420,
+      "bytes": 14603,
       "path": "scripts/operate.py",
-      "sha256": "899fde065f8dd292c3c60af548249c7fc0836cd0b7ae382acdd7f2c1f9cc9114"
+      "sha256": "257eb490968c1470be48d985eb873ad0ff3ee6b103155e47598954a1501e1ca2"
     },
     {
       "bytes": 1465,
@@ -331,9 +336,9 @@
       "sha256": "5886f6828848035275f98415260f7d9a783f6a7d852bc81a2e294c5c7fd52325"
     },
     {
-      "bytes": 10672,
+      "bytes": 12566,
       "path": "tests/contracts.mjs",
-      "sha256": "1a2e01ab209cca9742b877cf1edb38f2175e97f1191234c5c72e68e76d604dcf"
+      "sha256": "252264fb82715533856ac816d839e42bbcddb415bf93c61478b9739868623d16"
     },
     {
       "bytes": 6649,
@@ -351,9 +356,9 @@
       "sha256": "e26940a2a4ae129a38da2e2faed796a46869453c7baa35631864020db5a8d820"
     },
     {
-      "bytes": 17233,
+      "bytes": 20462,
       "path": "tests/test_api.py",
-      "sha256": "73ee50c4c20f92c558fed2e5d36344bf62e2ac0d2c3ce48c2f553b6d1c1b97a3"
+      "sha256": "23f4a3c1829e5706b03f6e08e7f42d641b6dbe3e0d033f764e2d85d609b2c39b"
     },
     {
       "bytes": 7247,
@@ -376,9 +381,9 @@
       "sha256": "b68681e9fa128d88a143f5a1ab88ff87c98f7023e919f46a09f57ecfcb6eec7c"
     },
     {
-      "bytes": 16911,
+      "bytes": 19985,
       "path": "tests/test_http.py",
-      "sha256": "2db71eece28761f3638f76284dad1dd2fa74904d4d05e66bbfc4bd1f0ab717c5"
+      "sha256": "9b7009ca3e2828665c7ec27f595aba0ee1839fbe7595aa096c404e41405b6543"
     },
     {
       "bytes": 4920,
@@ -391,9 +396,9 @@
       "sha256": "e6d98cb56e4f82b6a11b2505bf321df019c9bace40ed625aa1c22f3cc41a0833"
     },
     {
-      "bytes": 5281,
+      "bytes": 6786,
       "path": "tests/test_issuer_lifecycle.py",
-      "sha256": "94f1073f942d456767e3b37a572306d09809cb66be009514e619b48390a30cd7"
+      "sha256": "753ff0a376a39f73d7f07132102e93b776e4364073f209785d5024a587bdae24"
     },
     {
       "bytes": 4855,
@@ -406,9 +411,9 @@
       "sha256": "84eaf224dd9a21971e7711c2c94c21927a994f94ba0403b5837a9502af9d3245"
     },
     {
-      "bytes": 5645,
+      "bytes": 6257,
       "path": "tests/test_operating_contract.py",
-      "sha256": "31dc571040fc95f02c8190cb9c16ad63407ea77b8c82b5f165020f52fd332680"
+      "sha256": "f53928ac9c5ab713c9db07c3472b76b7135a0862b3def8cc80d88bc92d1adf8d"
     },
     {
       "bytes": 11359,
@@ -436,9 +441,9 @@
       "sha256": "a9951d238f9b1a42fde26c53739c6bae6a42a139a0f13b671385b57805b1f052"
     },
     {
-      "bytes": 12982,
+      "bytes": 19449,
       "path": "tests/test_recovery_contract.py",
-      "sha256": "b4df3893380ac754044d9ff9a3dda83273ae14841285fe1d11520e83994d5fd1"
+      "sha256": "96238bfea186203fd37294b03731a7fe925e3eee57dd1edc98083190ffb76fee"
     },
     {
       "bytes": 6851,
@@ -451,9 +456,9 @@
       "sha256": "92f0a67ae4fa6e89797d7333a2f9b83fe09d47f78e4b33dc28505c64bb440a76"
     },
     {
-      "bytes": 51720,
+      "bytes": 52742,
       "path": "web/app.js",
-      "sha256": "2dd0929ea3dd3eed460cca0228db429c81a57a1ef43e31b9c1080191097fd321"
+      "sha256": "a3072af1022445c630ab3cb992e01bc70969762989420be8c48a1a4ae6a5dfa1"
     },
     {
       "bytes": 177,
@@ -461,9 +466,9 @@
       "sha256": "eccdbc86ca638ee725b81be89afd71ba6bef610efd8d7dc367a4226176fbf145"
     },
     {
-      "bytes": 22469,
+      "bytes": 22639,
       "path": "web/index.html",
-      "sha256": "f6221245b042011dc1651ab7637e812d84c234d0d56bf503a423f7dbeda9316b"
+      "sha256": "816f365af3670289e80a48dfb88b2a2dd8f725156be6be3257cbef5349412c30"
     }
   ],
   "schema": "hellabit.source-manifest.v1"

@@ -2,11 +2,14 @@
 from __future__ import annotations
 import base64
 import json
+import os
 import re
 import secrets
+import sqlite3
+import stat
 from urllib.parse import urlsplit
 from .control import audit, ensure_schema
-from .ledger import Error, digest, identifier
+from .ledger import Connection,Error, digest, identifier
 from .rpc import _strict_object,_invalid_constant
 
 SCHEMA = """
@@ -46,6 +49,28 @@ class Identity:
             self.keys[kid]=key
         self.book,self.issuer,self.audience,self.jwt=book,issuer,audience,jwt
         ensure_schema(book,"identity",SCHEMA)
+
+    def _rate_admission(self,principal,limit):
+        """Rate counters are durable on this host and have no ledger write authority."""
+        path=self.book.path.with_name(self.book.path.name+'.api-rate.sqlite3')
+        fd=os.open(path,os.O_RDWR|os.O_CREAT|os.O_NOFOLLOW,0o600)
+        try:
+            info=os.fstat(fd)
+            if not stat.S_ISREG(info.st_mode) or info.st_uid!=os.getuid() or stat.S_IMODE(info.st_mode)!=0o600:
+                raise Error('unsafe_rate_store',423)
+        finally:os.close(fd)
+        try:
+            with sqlite3.connect(path,timeout=3,isolation_level=None,factory=Connection) as db:
+                db.execute('CREATE TABLE IF NOT EXISTS admissions(principal TEXT NOT NULL,window INTEGER NOT NULL,requests INTEGER NOT NULL,PRIMARY KEY(principal,window))')
+                db.execute('CREATE INDEX IF NOT EXISTS admissions_by_window ON admissions(window)')
+                db.execute('BEGIN IMMEDIATE')
+                window=self.book.clock()//60
+                row=db.execute('SELECT requests FROM admissions WHERE principal=? AND window=?',(principal,window)).fetchone()
+                if row and row[0]>=limit:raise Error('request_rate_exceeded',429)
+                db.execute('INSERT INTO admissions VALUES(?,?,1) ON CONFLICT(principal,window) DO UPDATE SET requests=requests+1',(principal,window))
+                db.execute('DELETE FROM admissions WHERE rowid IN (SELECT rowid FROM admissions WHERE window<? LIMIT 100)',(window-5,))
+                db.commit()
+        except sqlite3.Error:raise Error('rate_store_unavailable',503) from None
 
     def _history(self,db,row,action):
         from .ledger import canonical
@@ -147,8 +172,9 @@ class Identity:
             raise Error("invalid_access_token",401)
         if header.get("typ")!="at+jwt" and claims.get("token_use")!="access":
             raise Error("access_token_required",401)
-        with self.book.transaction() as db:
-            if db.execute("SELECT 1 FROM settings WHERE key IN ('recovery_quarantine','recovery_retired')").fetchone():
+        with self.book.db() as db:
+            db.execute('BEGIN')
+            if db.execute("SELECT 1 FROM settings WHERE key IN ('recovery_quarantine','recovery_retired','recovery_publish_pending')").fetchone():
                 raise Error("restored_database_quarantined",423)
             row=db.execute("SELECT * FROM api_principals WHERE issuer=? AND subject_hash=?",
                            (self.issuer,digest(claims["sub"]))).fetchone()
@@ -162,19 +188,14 @@ class Identity:
             if row["role"]=="operator" and (type(claims.get("auth_time")) is not int or
                     not self.book.clock()-900<=claims["auth_time"]<=self.book.clock()+15):
                 raise Error("fresh_operator_authentication_required",403)
-            window=self.book.clock()//60
-            old=db.execute("SELECT requests FROM api_rate_windows WHERE principal=? AND window=?",(row["id"],window)).fetchone()
-            if old and old[0]>=row["rate_limit"]:raise Error("request_rate_exceeded",429)
-            db.execute("""INSERT INTO api_rate_windows VALUES(?,?,1)
-                ON CONFLICT(principal,window) DO UPDATE SET requests=requests+1""",(row["id"],window))
-            db.execute("DELETE FROM api_rate_windows WHERE rowid IN(SELECT rowid FROM api_rate_windows WHERE window<? LIMIT 100)",(window-5,))
-            return {"id":row["id"],"tenant":row["tenant"],"role":row["role"],"customer":row["customer"],
+        self._rate_admission(row['id'],row['rate_limit'])
+        return {"id":row["id"],"tenant":row["tenant"],"role":row["role"],"customer":row["customer"],
                     "grant_id":row["grant_id"],"token_expires":claims["exp"],
                     "operator_auth_time":claims.get("auth_time"),
                     "identity_source":"pinned-issuer","mfa_asserted":isinstance(amr,list) and "mfa" in amr}
 
     def _validate_current(self,db,principal):
-        if db.execute("SELECT 1 FROM settings WHERE key IN ('recovery_quarantine','recovery_retired')").fetchone():
+        if db.execute("SELECT 1 FROM settings WHERE key IN ('recovery_quarantine','recovery_retired','recovery_publish_pending')").fetchone():
             raise Error("restored_database_quarantined",423)
         row=db.execute("SELECT * FROM api_principals WHERE id=? AND tenant=? AND issuer=?",
                        (principal['id'],principal['tenant'],self.issuer)).fetchone()
@@ -189,5 +210,6 @@ class Identity:
     def dispatch(self,principal,route,*args):
         """Reads are admitted here; every write rechecks under its commit lock."""
         guard=lambda db:self._validate_current(db,principal)
-        with self.book.db() as db:guard(db)
+        with self.book.db() as db:
+            db.execute('BEGIN');guard(db)
         with self.book.request_authority(guard):return route(principal,*args)

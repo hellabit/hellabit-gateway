@@ -102,7 +102,13 @@ try{
  await nav('issuer');await page.fill('#issuer-name','Example Institution Dollar');await page.fill('#issuer-symbol','EXUSD');await click('#issuer-config button[type=submit]');
  check('Issuance is disabled until current reserve evidence exists',await page.locator('#mint').isDisabled());
  await click('#attest');await click('#mint');data=await snapshot();
- await click('#attest-balance');
+ await page.fill('#observed-reserve','4.00');await click('#attest-balance');
+ check('An observed shortfall is visible in fiat units and disables issuance',(await snapshot()).issuer.observed_reserve_minor_units===400&&await page.locator('#mint').isDisabled()&&(await page.locator('#reserve-observation').textContent()).includes('4.00 USD')&&(await page.locator('#issuer-metrics').textContent()).includes('Issuance paused'));
+ await capture('reserve-contradiction-desktop.png');
+ await page.setViewportSize({width:390,height:844});
+ check('Reserve contradiction and blocked mint remain contained on mobile',await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth)&&await page.locator('#mint').isDisabled());
+ await capture('reserve-contradiction-mobile.png');await page.setViewportSize({width:1440,height:1100});
+ await page.fill('#observed-reserve','100.00');await click('#attest-balance');
  check('Full reserve refresh covers the complete balance without adding a deposit',(await snapshot()).issuer.reserve===100000000&&(await page.locator('#action-message').textContent()).includes('complete test reserve balance'));
  check('White-label issuer has independent identity and reserve limit',data.issuer.symbol==='EXUSD'&&data.issuer.supply===10000000&&data.issuer.reserve===100000000);
  check('Used currency identity is visibly fixed and reserve expiry is shown',await page.locator('#save-issuer').isDisabled()&&await page.locator('#issuer-name').isDisabled()&&(await page.locator('#issuer-metrics').textContent()).includes('expires'));

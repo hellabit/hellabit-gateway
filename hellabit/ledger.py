@@ -12,7 +12,7 @@ import time
 import contextvars
 import fcntl
 import stat
-from contextlib import contextmanager
+from contextlib import contextmanager,nullcontext
 
 MAX_AMOUNT = 10**12
 MAX_BALANCE = 10**15
@@ -120,7 +120,7 @@ class Connection(sqlite3.Connection):
 
 
 class Ledger:
-    def __init__(self, path, clock=None):
+    def __init__(self, path, clock=None, *, _recovery_candidate=False):
         require_safe_sqlite()
         raw = Path(path).absolute()
         if raw.is_symlink() or (raw.exists() and not raw.is_file()):
@@ -130,7 +130,7 @@ class Ledger:
         self.clock = clock or (lambda: int(time.time()))
         self._request_guard=contextvars.ContextVar("hellabit_request_guard",default=None)
         from .migrations import preflight,upgrade
-        preflight(self.path)
+        preflight(self.path,allow_pending=_recovery_candidate)
         old = os.umask(0o077)
         try:
             with self.writer_lock():upgrade(self)
@@ -175,7 +175,7 @@ class Ledger:
         db = self.db()
         try:
             db.execute("BEGIN IMMEDIATE")
-            if db.execute("SELECT 1 FROM settings WHERE key='recovery_retired'").fetchone():
+            if db.execute("SELECT 1 FROM settings WHERE key IN ('recovery_retired','recovery_publish_pending')").fetchone():
                 raise Error('previous_writer_retired',423)
             guard=self._request_guard.get()
             if guard:guard(db)
@@ -204,7 +204,7 @@ class Ledger:
 
     def assert_payment_writes(self, db):
         """A restored snapshot cannot authorize new financial effects."""
-        if db.execute("SELECT 1 FROM settings WHERE key IN ('recovery_quarantine','recovery_retired')").fetchone():
+        if db.execute("SELECT 1 FROM settings WHERE key IN ('recovery_quarantine','recovery_retired','recovery_publish_pending')").fetchone():
             raise Error("restored_database_quarantined", 423)
 
     def create_tenant(self, name, country="CA"):
@@ -229,7 +229,7 @@ class Ledger:
 
     def key_principal(self,db,token):
         if not isinstance(token,str) or len(token)>200:raise Error('unauthorized',401)
-        if db.execute("SELECT 1 FROM settings WHERE key IN ('recovery_quarantine','recovery_retired')").fetchone():
+        if db.execute("SELECT 1 FROM settings WHERE key IN ('recovery_quarantine','recovery_retired','recovery_publish_pending')").fetchone():
             raise Error("restored_database_quarantined",423)
         row = db.execute("SELECT id FROM tenants WHERE token_hash=? AND bootstrap_revoked=0", (hashlib.sha256(token.encode()).hexdigest(),)).fetchone()
         if row:
@@ -237,9 +237,9 @@ class Ledger:
         row = db.execute("SELECT tenant FROM merchant_keys WHERE key_hash=? AND revoked=0", (hashlib.sha256(token.encode()).hexdigest(),)).fetchone()
         if row:
             return {"tenant": row[0], "role": "merchant", "customer": None}
-        row = db.execute("SELECT tenant,subject FROM agent_keys WHERE key_hash=? AND revoked=0", (hashlib.sha256(token.encode()).hexdigest(),)).fetchone()
+        row = db.execute("SELECT tenant,subject,id FROM agent_keys WHERE key_hash=? AND revoked=0", (hashlib.sha256(token.encode()).hexdigest(),)).fetchone()
         if row:
-            return {"tenant": row[0], "role": "agent", "customer": row[1]}
+            return {"tenant": row[0], "role": "agent", "customer": row[1], "id":row[2]}
         raise Error("unauthorized", 401)
 
     def issue_merchant_key(self, tenant):
@@ -290,6 +290,7 @@ class Ledger:
 
     def agent_state(self, tenant, customer):
         with self.db() as db:
+            db.execute('BEGIN')
             info = self.tenant(db, tenant); self.customer(db, tenant, customer)
             assets = []
             for row in db.execute("SELECT id,symbol,decimals FROM assets WHERE tenant=?", (tenant,)):
@@ -318,7 +319,8 @@ class Ledger:
         return dict(row)
 
     def _balance(self, db, tenant, asset, account):
-        return db.execute("SELECT COALESCE(SUM(p.delta),0) FROM postings p JOIN journals j ON p.journal=j.seq WHERE j.tenant=? AND j.asset=? AND p.account=?", (tenant, asset, account)).fetchone()[0]
+        row=db.execute('SELECT balance FROM account_positions WHERE tenant=? AND asset=? AND account=?',(tenant,asset,account)).fetchone()
+        return row[0] if row else 0
 
     def _held(self, db, tenant, asset, customer):
         return db.execute("SELECT COALESCE(SUM(amount),0) FROM operations WHERE tenant=? AND asset=? AND customer=? AND state IN ('reserved','uncertain')", (tenant, asset, customer)).fetchone()[0]
@@ -344,26 +346,32 @@ class Ledger:
         if rail not in ("bank", "usdc") or not isinstance(proof, str) or not re.fullmatch(r"[0-9a-f]{64}", proof):
             raise Error("invalid_settlement_evidence", 400)
         request = digest([customer, asset, amount, proof])
+        from .events import event_key,sandbox_connection
+        connection=sandbox_connection(rail,asset)
+        identity=event_key(tenant,connection,reference,'movement')
         with self.transaction() as db:
             self.tenant(db, tenant); self.customer(db, tenant, customer)
             if self.asset(db, tenant, asset)["rail"] != rail:
                 raise Error("rail_asset_mismatch", 400)
-            old = db.execute("SELECT * FROM settlements WHERE tenant=? AND rail=? AND reference=?", (tenant, rail, reference)).fetchone()
+            old = db.execute("SELECT * FROM settlements WHERE tenant=? AND rail=? AND reference IN (?,?)", (tenant, rail, identity,reference)).fetchone()
             if old:
                 if old["request_hash"] != request:
                     raise Error("settlement_replay_mismatch")
                 return {"journal": old["journal"], "replayed": True}
             if self._balance(db, tenant, asset, "customer:" + customer) + amount > MAX_BALANCE:
                 raise Error("balance_limit")
-            self.consume_rail_event(db, tenant, rail, reference, "funding", proof)
-            seq = self._post(db, tenant, "funding", rail + ":" + reference, asset, [("clearing:" + rail, -amount), ("customer:" + customer, amount)], {"proof_hash": proof, "rail": rail})
-            db.execute("INSERT INTO settlements VALUES(?,?,?,?,?)", (tenant, rail, reference, request, seq))
+            self.consume_rail_event(db, tenant, rail, reference, "funding", proof,connection=connection)
+            seq = self._post(db, tenant, "funding", identity, asset, [("clearing:" + rail, -amount), ("customer:" + customer, amount)], {"proof_hash": proof, "rail": rail,'external_reference':reference,'connection':connection})
+            db.execute("INSERT INTO settlements VALUES(?,?,?,?,?)", (tenant, rail, identity, request, seq))
             return {"journal": seq, "replayed": False}
 
-    def consume_rail_event(self, db, tenant, rail, reference, purpose, proof_hash):
-        if db.execute("SELECT 1 FROM rail_events WHERE tenant=? AND rail=? AND reference=?", (tenant, rail, reference)).fetchone():
+    def consume_rail_event(self, db, tenant, rail, reference, purpose, proof_hash, *, connection=None):
+        from .events import event_key
+        identity=event_key(tenant,connection,reference,'movement') if connection else reference
+        if db.execute("SELECT 1 FROM rail_events WHERE tenant=? AND rail=? AND reference IN (?,?)", (tenant, rail, identity,reference)).fetchone():
             raise Error("rail_event_already_consumed")
-        db.execute("INSERT INTO rail_events VALUES(?,?,?,?,?)", (tenant, rail, reference, purpose, proof_hash))
+        db.execute("INSERT INTO rail_events VALUES(?,?,?,?,?)", (tenant, rail, identity, purpose, proof_hash))
+        return identity
 
     def create_quote(self, tenant, asset, amount, fee, resource="report", work_input=None):
         units(amount); units(fee, zero=True); identifier(resource)
@@ -378,16 +386,20 @@ class Ledger:
             db.execute("INSERT INTO quotes(tenant,id,asset,resource,amount,fee,expires,work_input,input_hash) VALUES(?,?,?,?,?,?,?,?,?)", (tenant, quote, asset, resource, amount, fee, self.clock() + 900, canonical(normalized) if normalized is not None else None, input_hash))
         return {"quote": quote, "asset": asset, "amount": amount, "fee": fee, "resource": resource, "input_hash": input_hash, "expires_in": 900}
 
-    def reserve(self, tenant, customer, quote, key):
+    def reserve(self, tenant, customer, quote, key, *, actor=None):
+        from .agent_policy import AgentPolicy
+        policy=AgentPolicy(self) if actor and actor["role"]=="agent" else None
         identifier(key); identifier(quote)
         request = digest([customer, quote]); key_hash = digest(key)
         with self.transaction() as db:
             self.assert_payment_writes(db)
             self.tenant(db, tenant); self.customer(db, tenant, customer)
+            if policy and actor["customer"]!=customer:raise Error("customer_forbidden",403)
             old = db.execute("SELECT * FROM operations WHERE tenant=? AND key_hash=?", (tenant, key_hash)).fetchone()
             if old:
                 if old["request_hash"] != request:
                     raise Error("idempotency_conflict")
+                if policy:policy.assert_reservation(db,tenant,actor,old["id"])
                 return {**dict(old), "replayed": True}
             q = db.execute("SELECT * FROM quotes WHERE tenant=? AND id=?", (tenant, quote)).fetchone()
             if not q or q["expires"] <= self.clock():
@@ -396,6 +408,7 @@ class Ledger:
             if available < q["amount"]:
                 raise Error("insufficient_available_credits", 402)
             op = "op_" + secrets.token_hex(12)
+            if policy:policy.reserve(db,tenant,actor,q,key_hash,op)
             db.execute("INSERT INTO operations VALUES(?,?,?,?,?,?,?,?,?,?,?,?)", (op, tenant, customer, q["asset"], quote, q["amount"], q["fee"], "reserved", request, key_hash, None, self.clock()))
             return self._operation(db, tenant, op)
 
@@ -455,7 +468,7 @@ class Ledger:
                 raise Error('operation_not_found', 404)
             return self._operation(db, tenant, row['id'])
 
-    def run_report(self, tenant, op):
+    def run_report(self, tenant, op, *, actor=None):
         """Reference paid API: result and debit commit in the same transaction."""
         with self.transaction() as db:
             row = self._operation(db, tenant, op)
@@ -464,6 +477,9 @@ class Ledger:
                 return {"operation": op, "result_hash": delivery["result_hash"], "replayed": True}
             if row["state"] != "reserved":
                 raise Error("job_requires_reserved_operation")
+            if actor and actor["role"]=="agent":
+                from .agent_policy import AgentPolicy
+                AgentPolicy(self).assert_reservation(db,tenant,actor,op,executing=True)
             quote = db.execute("SELECT resource,work_input,input_hash FROM quotes WHERE tenant=? AND id=?", (tenant, row["quote"])).fetchone()
             resource = quote['resource']
             work_input = json.loads(quote['work_input']) if quote['work_input'] is not None else None
@@ -513,8 +529,10 @@ class Ledger:
             db.execute("INSERT INTO enrollments VALUES(?,?,?,?) ON CONFLICT(tenant,rail) DO UPDATE SET body=excluded.body,updated=excluded.updated", (tenant, rail, canonical(body), self.clock()))
         return {"rail": rail, "status": "prepared", "externally_verified": False, "live_enabled": False}
 
-    def reconcile(self, tenant):
-        with self.db() as db:
+    def reconcile(self, tenant, *, db=None):
+        own=db is None
+        with self.db() if own else nullcontext(db) as db:
+            if own:db.execute('BEGIN')
             self.tenant(db, tenant)
             previous, failures, count = "0" * 64, [], 0
             for row in db.execute("SELECT * FROM journals WHERE tenant=? ORDER BY seq", (tenant,)):
@@ -524,6 +542,13 @@ class Ledger:
                 if not bound or sum(n for _, n in entries) or entries != body["entries"] or row["previous"] != previous or digest({"previous": previous, "body": body}) != row["digest"]:
                     failures.append(row["seq"])
                 previous = row["digest"]; count += 1
+            positions={(r[0],r[1]):r[2] for r in db.execute('SELECT asset,account,balance FROM account_positions WHERE tenant=?',(tenant,))}
+            history={(r[0],r[1]):r[2] for r in db.execute('''SELECT j.asset,p.account,SUM(p.delta)
+                FROM postings p JOIN journals j ON j.seq=p.journal WHERE j.tenant=? GROUP BY j.asset,p.account''',(tenant,))}
+            if positions!=history:failures.append('account_position_mismatch')
+            usage={(r[0],r[1],r[2]):r[3] for r in db.execute('SELECT principal,asset,day,authorized_units FROM agent_daily_usage WHERE tenant=?',(tenant,))}
+            reservations={(r[0],r[1],r[2]):r[3] for r in db.execute('SELECT principal,asset,day,SUM(amount) FROM agent_reservations WHERE tenant=? GROUP BY principal,asset,day',(tenant,))}
+            if usage!=reservations:failures.append('agent_authorized_usage_mismatch')
             for c in db.execute("SELECT id FROM customers WHERE tenant=?", (tenant,)):
                 for a in db.execute("SELECT id FROM assets WHERE tenant=?", (tenant,)):
                     balance = self._balance(db, tenant, a[0], "customer:" + c[0])
@@ -531,8 +556,9 @@ class Ledger:
                         failures.append("available_balance")
             return {"ok": not failures, "journal_count": count, "head": previous, "failures": failures, "scope": "internal-ledger", "external_settlement_verified": False}
 
-    def snapshot(self, tenant):
+    def snapshot(self, tenant, *, include_issuer=False):
         with self.db() as db:
+            db.execute('BEGIN')
             info = self.tenant(db, tenant)
             assets = [dict(x) for x in db.execute("SELECT * FROM assets WHERE tenant=?", (tenant,))]
             customer = "agent-01"
@@ -556,11 +582,16 @@ class Ledger:
             from .outcomes import payout_view
             payouts = [payout_view(db,x) for x in db.execute("SELECT * FROM payouts WHERE tenant=? ORDER BY rowid DESC LIMIT 20", (tenant,))]
             counts = {x['state']: x['count'] for x in db.execute('SELECT state,COUNT(*) AS count FROM operations WHERE tenant=? GROUP BY state', (tenant,))}
-            return {"workspace": info, "mode": "sandbox", "customer": customer, "assets": assets, "operations": ops, "operation_counts": counts, "journal": events, "journal_count": db.execute('SELECT COUNT(*) FROM journals WHERE tenant=?', (tenant,)).fetchone()[0], "observed_at": self.clock(), "enrollments": enrollments, "payouts": payouts, "readiness": {"bank": "institution-enrollment-required", "usdc": "network-and-signer-enrollment-required", "issuer": "legal-issuer-and-reserves-required"}, "live_payments_enabled": False}
+            extra={}
+            if include_issuer:
+                from .issuer import Issuer
+                extra['issuer']=Issuer(self)._state(db,tenant)
+            return {**extra,"workspace": info, "mode": "sandbox", "customer": customer, "assets": assets, "operations": ops, "operation_counts": counts, "journal": events, "journal_count": db.execute('SELECT COUNT(*) FROM journals WHERE tenant=?', (tenant,)).fetchone()[0], "observed_at": self.clock(), "enrollments": enrollments, "payouts": payouts, "readiness": {"bank": "institution-enrollment-required", "usdc": "network-and-signer-enrollment-required", "issuer": "legal-issuer-and-reserves-required"}, "live_payments_enabled": False}
 
     def activity(self, tenant, asset=None):
         """Filter before the bounded page; unresolved work always comes first."""
         with self.db() as db:
+            db.execute('BEGIN')
             self.tenant(db, tenant)
             if asset is not None:
                 self.asset(db, tenant, asset)

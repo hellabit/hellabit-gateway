@@ -32,6 +32,15 @@ class OperatingContractTests(unittest.TestCase):
     def payout(self,asset='CAD',key='payout'):
         return Payouts(self.book).request(self.tenant,asset,100,'recipient',key)
 
+    def test_funding_references_are_scoped_by_clearing_account(self):
+        bank=SandboxBank(self.book)
+        first=bank.fund(self.tenant,'agent-01','CAD',7,'shared-bank-ref')
+        other=bank.fund(self.tenant,'agent-01','USD',11,'shared-bank-ref')
+        self.assertNotEqual(first['journal'],other['journal'])
+        self.assertTrue(bank.fund(self.tenant,'agent-01','CAD',7,'shared-bank-ref')['replayed'])
+        with self.assertRaisesRegex(Error,'settlement_replay_mismatch'):bank.fund(self.tenant,'agent-01','CAD',8,'shared-bank-ref')
+        self.assertTrue(self.book.reconcile(self.tenant)['ok'])
+
     def tick(self,intent=None):
         command=[sys.executable,str(ROOT/'scripts/operate.py'),'--state',str(self.book.path),'--tenant',self.tenant,'tick']
         if intent:command+=['--intent',intent]

@@ -7,6 +7,7 @@ import re
 from .ledger import Error, canonical, digest, identifier, units
 from .rails import SandboxBank
 from .control import audit,ensure_schema
+from .events import sandbox_connection
 
 SCHEMA="""
 CREATE TABLE IF NOT EXISTS bank_balance_sequence(tenant TEXT NOT NULL,account TEXT NOT NULL,
@@ -36,8 +37,17 @@ class Issuer:
         data["supply"] = -self.ledger._balance(db, tenant, data["asset"], "issuer-liability")
         data["pending_redemptions"] = db.execute("SELECT COALESCE(SUM(amount),0) FROM redemptions WHERE tenant=? AND state='pending'", (tenant,)).fetchone()[0]
         data["liabilities"] = data["supply"] + data["pending_redemptions"]
-        data["headroom"] = data["reserve"] - data["liabilities"]
-        data["reserve_current"] = data["valid_until"] > self.ledger.clock()
+        latest=db.execute('''SELECT o.reference,o.balance,o.observed_at,o.sequence,a.booked_units,a.liability_units,a.outcome
+            FROM reserve_observations o JOIN reserve_assessments a ON a.tenant=o.tenant AND a.reference=o.reference
+            WHERE o.tenant=? ORDER BY o.sequence DESC LIMIT 1''',(tenant,)).fetchone()
+        data['observed_reserve_units']=latest['balance']*10000 if latest else None
+        data['observed_reserve_minor_units']=latest['balance'] if latest else None
+        data['reserve_observed_at']=latest['observed_at'] if latest else None
+        data['reserve_reconciliation_required']=bool(latest and latest['outcome']=='contradiction')
+        data['reserve_case']=({k:latest[k] for k in ('reference','sequence','booked_units','liability_units')}
+                              if data['reserve_reconciliation_required'] else None)
+        data["reserve_current"] = data["valid_until"] > self.ledger.clock() and not data['reserve_reconciliation_required']
+        data["headroom"] = max(0,data["reserve"]-data["liabilities"]) if data["reserve_current"] else 0
         data['identity_locked'] = bool(db.execute('SELECT 1 FROM reserve_proofs WHERE tenant=? LIMIT 1', (tenant,)).fetchone())
         data["mode"] = "sandbox"
         data["real_reserves_verified"] = False
@@ -46,7 +56,15 @@ class Issuer:
 
     def state(self, tenant):
         with self.ledger.db() as db:
+            db.execute('BEGIN')
             return self._state(db, tenant)
+
+    def redemption(self,tenant,request_id):
+        identifier(request_id)
+        with self.ledger.db() as db:
+            row=db.execute('SELECT id,customer,source,amount,state,payment_reference FROM redemptions WHERE tenant=? AND id=?',(tenant,request_id)).fetchone()
+            if not row:raise Error('redemption_not_found',404)
+            return dict(row)
 
     def configure(self, tenant, name, symbol, currency):
         if not isinstance(name, str) or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9 .'-]{1,59}", name):
@@ -76,7 +94,7 @@ class Issuer:
             token_units = amount * 10_000
             if state["reserve"] + token_units > 10**15:
                 raise Error("reserve_limit")
-            self.ledger.consume_rail_event(db, tenant, "bank", reference, "issuer-reserve", request)
+            self.ledger.consume_rail_event(db, tenant, "bank", reference, "issuer-reserve", request,connection=sandbox_connection('bank',state['currency']))
             db.execute("INSERT INTO reserve_proofs VALUES(?,?,?,?)", (tenant, reference, request, token_units))
             # Evidence of a new deposit cannot refresh the historical pool.
             fresh=type(proof['observed_at']) is int and self.ledger.clock()-300<=proof['observed_at']<=self.ledger.clock()+15
@@ -92,23 +110,28 @@ class Issuer:
             self.ledger.assert_payment_writes(db)
             state=self._state(db,tenant)
             bank=SandboxBank(self.ledger)
-            claimed=bank_envelope.get('body',{}).get('balance') if isinstance(bank_envelope,dict) else None
+            body=bank_envelope.get('body') if isinstance(bank_envelope,dict) else None
+            claimed=body.get('balance') if isinstance(body,dict) else None
             proof=bank.verify_balance(bank_envelope,tenant,state['currency'],claimed,fresh=False)
             old=db.execute('SELECT proof_hash FROM reserve_observations WHERE tenant=? AND reference=?',(tenant,proof['reference'])).fetchone()
             if old:
                 if old[0]!=proof['proof_hash']:raise Error('reserve_observation_conflict',409)
                 return {**state,'replayed':True}
-            bank.verify_balance(bank_envelope,tenant,state['currency'],state['reserve']//10000)
-            sequence=db.execute('SELECT COALESCE(MAX(sequence),0) FROM reserve_observations WHERE tenant=? AND account=?',(tenant,proof['account'])).fetchone()[0]
-            if proof['sequence']<=sequence:raise Error('reserve_observation_out_of_order',409)
+            bank.verify_balance(bank_envelope,tenant,state['currency'],claimed)
+            previous=db.execute('SELECT sequence,observed_at FROM reserve_observations WHERE tenant=? AND account=? ORDER BY sequence DESC LIMIT 1',(tenant,proof['account'])).fetchone()
+            if previous and (proof['sequence']<=previous['sequence'] or proof['observed_at']<previous['observed_at']):raise Error('reserve_observation_out_of_order',409)
             from .events import event_key
             reference=event_key(tenant,proof['account'],proof['reference'],'reserve-balance')
             self.ledger.consume_rail_event(db,tenant,"bank",reference,"reserve-balance",proof["proof_hash"])
             db.execute('INSERT INTO reserve_observations VALUES(?,?,?,?,?,?,?,?,?)',
                        tuple(proof[k] for k in ('workspace','reference','account','asset','balance','observed_at','valid_until','sequence','proof_hash')))
-            db.execute("UPDATE issuer SET valid_until=? WHERE tenant=?",(proof['valid_until'],tenant))
-            audit(self.ledger,db,tenant,"reserve-balance-attested",proof["reference"],{"balance":state["reserve"],"mode":"sandbox"})
-        return self.state(tenant)
+            observed=proof['balance']*10000
+            matched=observed==state['reserve']
+            db.execute('INSERT INTO reserve_assessments VALUES(?,?,?,?,?)',(tenant,proof['reference'],state['reserve'],state['liabilities'],'matched' if matched else 'contradiction'))
+            db.execute("UPDATE issuer SET valid_until=? WHERE tenant=?",(proof['valid_until'] if matched else 0,tenant))
+            audit(self.ledger,db,tenant,'reserve-balance-attested' if matched else 'reserve-contradiction-observed',proof['reference'],
+                  {'observed_units':observed,'booked_units':state['reserve'],'liability_units':state['liabilities'],'sequence':proof['sequence'],'mode':'sandbox'})
+            return self._state(db,tenant)
 
     def mint(self, tenant, customer, amount, request_id):
         units(amount); identifier(request_id)
@@ -121,6 +144,8 @@ class Issuer:
                     raise Error("issuer_request_conflict")
                 return {"request": request_id, "replayed": True}
             state = self._state(db, tenant)
+            if state['reserve_reconciliation_required']:
+                raise Error('reserve_reconciliation_required',423)
             if not state["reserve_current"]:
                 raise Error("reserve_evidence_stale")
             if amount > state["headroom"]:
@@ -171,7 +196,7 @@ class Issuer:
                 return {"state": "paid", "replayed": True}
             if db.execute("SELECT 1 FROM redemptions WHERE tenant=? AND payment_reference=?", (tenant, proof["reference"])).fetchone():
                 raise Error("payment_reference_already_used")
-            self.ledger.consume_rail_event(db, tenant, "bank", proof["reference"], "redemption-payout", proof["proof_hash"])
+            self.ledger.consume_rail_event(db, tenant, "bank", proof["reference"], "redemption-payout", proof["proof_hash"],connection=sandbox_connection('bank',state['currency']))
             db.execute("UPDATE redemptions SET state='paid',payment_reference=? WHERE tenant=? AND id=?", (proof["reference"], tenant, request_id))
             db.execute("UPDATE issuer SET reserve=reserve-? WHERE tenant=?", (row["amount"], tenant))
             fiat_units = row["amount"] // 10_000

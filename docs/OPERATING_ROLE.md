@@ -29,3 +29,32 @@ funds flow/functions/customer jurisdictions, resolve applicable legal roles and
 registrations, obtain the named program's written acceptance, assign credential
 custody and incident ownership, review security, and authorize one bounded live
 canary. Do not accept real customer funds while these remain unresolved.
+
+## First merchant, then a funded provider program
+
+For an initial self-use pilot, identify one existing company and its own approved
+settlement account. Compare one type of payment and its statement outcome before
+requesting execution access. Treat each other company as a separate legal entity
+until its actual ownership, activities and provider terms are documented. An
+internal-transaction exclusion has specific conditions; common ownership alone
+is not general permission to provide payment services.
+
+A founder can negotiate a partner-funded pilot or revenue share. The settlement
+partner supplies the account access and agrees in writing who performs onboarding,
+funds handling, monitoring, returns, disputes, recovery and incident response.
+Canada's agent or mandatary exclusion requires activity within the actual
+authority granted by a registered PSP and inclusion on its maintained agent list.
+It is not transferable merely by buying or sharing equity. In the United States,
+federal money-transmission treatment and applicable state rules must be evaluated
+for the particular funds flow and agreements.
+
+Owning the software or brand is a separate decision from becoming the registered
+operator. Direct participation requires a funded operating plan, registration
+where applicable, the rail's admission and testing, and a settlement account or
+settlement agent. A no-founder-cash arrangement is a commercial target, not a
+promise that regulatory, provider, reserve or operating costs disappear.
+
+- [Canada RPAA section 10](https://laws-lois.justice.gc.ca/eng/acts/R-7.36/section-10.html)
+- [Payments Canada PSP participation](https://www.payments.ca/connect/membership/payment-service-provider-participation)
+- [FinCEN payment processor ruling](https://www.fincen.gov/resources/statutes-regulations/administrative-rulings/application-money-services-business)
+- [California DFPI example of state-specific agent-of-payee treatment](https://dfpi.ca.gov/rules-enforcement/laws-and-regulations/opinion-letters-by-law-subject/agent-of-payee-payment-processing/)
