@@ -58,6 +58,11 @@ def main():
     evidence=commands.add_parser("record-evidence")
     for name in ("control","reference","document-hash"):evidence.add_argument("--"+name,required=True)
     evidence.add_argument("--expires",type=int,required=True)
+    evidence.add_argument("--scope-sha256")
+    profile=commands.add_parser("set-evidence-profile")
+    profile.add_argument("--profile-sha256",required=True);profile.add_argument("--expected-scope-sha256",required=True)
+    revoke=commands.add_parser("revoke-evidence")
+    for name in ("control","reference","reason"):revoke.add_argument("--"+name,required=True)
     usage=commands.add_parser("usage");usage.add_argument("action",choices=["plan","record","preview","close"])
     usage.add_argument("--plan",required=True);usage.add_argument("--currency",default="USD",choices=["CAD","USD"])
     usage.add_argument("--rate-micro",type=int,default=1000);usage.add_argument("--base-minor",type=int,default=0)
@@ -138,7 +143,11 @@ def main():
                     packet=Readiness(book).packet(tenant);_write_new(args.output,canonical(packet).encode())
                     result={"packet_written":True,"identity_details_included":False,"legal_determination_included":False}
                 elif args.command=="record-evidence":
-                    result=Readiness(book).record(tenant,args.control,args.reference,args.document_hash,args.expires)
+                    result=Readiness(book).record(tenant,args.control,args.reference,args.document_hash,args.expires,args.scope_sha256)
+                elif args.command=="set-evidence-profile":
+                    result=Readiness(book).set_profile(tenant,args.profile_sha256,args.expected_scope_sha256)
+                elif args.command=="revoke-evidence":
+                    result=Readiness(book).revoke(tenant,args.control,args.reference,args.reason)
                 elif args.command=="drill":
                     from hellabit.backup import recovery_drill
                     result=recovery_drill(book)

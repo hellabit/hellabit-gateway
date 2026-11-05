@@ -347,8 +347,14 @@ class Handler(BaseHTTPRequestHandler):
                 except ImportError:raise Error("optional_api_tools_not_configured",423) from None
                 result=recovery_drill(book)
             elif tail=='readiness/evidence':
-                fields(body,["control","reference","document_hash","expires"])
+                fields(body,["control","reference","document_hash","expires"],["scope_sha256"])
                 result=Readiness(book).record(tenant,**body)
+            elif tail=='readiness/evidence-profile':
+                fields(body,["profile_sha256","expected_scope_sha256"])
+                result=Readiness(book).set_profile(tenant,**body)
+            elif tail=='readiness/revoke-evidence':
+                fields(body,["control","reference","reason"])
+                result=Readiness(book).revoke(tenant,**body)
             elif tail.startswith("payouts/") and tail.count("/") == 2 and tail.endswith("/confirm"):
                 fields(body, ["payment_reference"], ["manual_test_only"])
                 if body.get("manual_test_only") is not True:

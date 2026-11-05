@@ -84,6 +84,37 @@ class OperationsTests(unittest.TestCase):
         self.assertEqual(self.balance("payout:"+first["id"]),0)
         self.assertTrue(self.book.reconcile(self.tenant)["ok"])
 
+    def test_paused_connection_reports_the_full_queue_with_separate_hold_kinds(self):
+        accepted, original = (self.payout(key) for key in ("accepted-first","lost-second"))
+        job=self.ops.claim(self.tenant,intent=accepted["intent"])
+        receipt={**{k:job[k] for k in ("request_hash","amount","asset","recipient")},
+                 "mode":"sandbox","key":job["external_key"],"reference":"first-accepted","status":"accepted"}
+        self.ops.finish(self.tenant,job["id"],receipt,lease=job["lease"],source="worker")
+        self.now+=1
+        self.ops.claim(self.tenant,intent=original["intent"],lease_seconds=5)
+        self.now+=1
+        for i in range(34):
+            self.payouts.request(self.tenant,"CAD",5,"merchant-account",f"queued-{i}")
+        SandboxBank(self.book).fund(self.tenant,"agent-01","USD",1000,"usd-opening")
+        quote=self.book.create_quote(self.tenant,"USD",500,10)["quote"]
+        operation=self.book.reserve(self.tenant,"agent-01",quote,"usd-purchase")["id"]
+        self.book.run_report(self.tenant,operation)
+        separate=self.payouts.request(self.tenant,"USD",20,"merchant-account","usd-ready")
+        report=self.ops.list(self.tenant)
+        self.assertEqual(len(report["intents"]),30)
+        self.assertEqual(len(report["connection_impact"]),1)
+        impact=report["connection_impact"][0]
+        self.assertEqual((impact["asset"],impact["held_units"],impact["held_count"]),("CAD","270",36))
+        self.assertEqual(impact["holds"]["queued"],{"count":34,"units":"170","oldest_created":1002})
+        self.assertEqual(impact["holds"]["awaiting_settlement"]["units"],"50")
+        self.assertEqual(impact["holds"]["in_flight"]["units"],"50")
+        self.assertEqual(report["attention"][0]["held_units"],50)
+        self.now+=5
+        expired=self.ops.list(self.tenant)["connection_impact"][0]["holds"]
+        self.assertNotIn("in_flight",expired)
+        self.assertEqual(expired["unknown"],{"count":1,"units":"50","oldest_created":1000})
+        self.assertEqual(self.ops.claim(self.tenant,intent=separate["intent"])["asset"],"USD")
+
     def test_reused_accepted_reference_fences_connection_and_keeps_both_holds(self):
         first, second, third = (self.payout("duplicate-ref-"+str(i)) for i in range(3))
         for payout in (first,second):

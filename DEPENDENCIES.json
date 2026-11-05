@@ -5,7 +5,7 @@
     "lockSha256": "077d4dff191a97659426d3dda820b1d18d9cf0e136ea9db3927766e300af50c6",
     "requirements": "requirements-api.txt"
   },
-  "packageLockSha256": "b20a330e395198ffd8ae038ac75b59910c80feff2294f53a5cc0f39b091cce7e",
+  "packageLockSha256": "6bbb734fa144230c0171d0455df3aa8c1706a1f1a5fdddb1d73a2e3723027c21",
   "packages": [
     {
       "integrity": "sha512-nhCBV3quEgesuf7c7KYfperqSS14T8bYuvJ8PcLJp6znkZpFc0AuW4qBtr8eKVyPPe/8RSr7sglCWPU5eaxwKQ==",

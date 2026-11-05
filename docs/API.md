@@ -106,9 +106,22 @@ Owner-only loopback routes added in 0.4: `GET /ops`, `GET /readiness`,
 `GET /readiness/packet`, `POST /ops/{intent}/process`, `/interrupt`, `/reconcile`,
 `POST /readiness/recovery-drill`, and `POST /readiness/evidence`. Mutation bodies
 are exact-field validated. The three execution actions are synthetic only; the
-evidence route accepts a reference, document hash and expiry, never a verified
-flag. None can open the live submission boundary.
+evidence route accepts `control`, `reference`, `document_hash`, Unix-second
+`expires`, and optional `scope_sha256` from `GET /readiness`. A missing scope
+keeps the record as unscoped. `POST /readiness/evidence-profile` records a
+`profile_sha256` against `expected_scope_sha256`. `POST /readiness/revoke-evidence`
+records a withdrawal for `control`, `reference`, and `reason` (`withdrawn`,
+`conditions-changed`, or `incorrect`). These two routes are also owner-only.
+None accepts a verification flag or can enable live submission.
 
+`GET /ops` lists at most 30 recent or active intents. Its `connection_impact`
+separately covers all active holds on paused connections. Each connection/asset
+row includes the total and a `holds` breakdown of unknown submissions (including
+expired leases), in-flight submissions, blocked queued payments and accepted
+payments awaiting settlement. The amount fields are decimal strings containing
+exact integer native units. Times are Unix seconds. The existing `attention`
+field still reports the admission blockers only. An accepted payment awaiting
+settlement does not itself block the next submission.
 
 Deployment API `GET /api/health` reports process liveness only. Authenticated
 `GET /api/v1/workspaces/WORKSPACE_ID/ready` checks database access and restore

@@ -91,13 +91,44 @@ class Operations:
                 created DESC,rowid DESC LIMIT 30""", (tenant,)).fetchall()
             counts = {r["state"]: r["n"] for r in db.execute(
                 f"SELECT {INTENT_STATE} AS state,COUNT(*) n FROM execution_intents WHERE tenant=? GROUP BY 1", (tenant,))}
-            attention = [dict(r) for r in db.execute(f"""SELECT connection,asset,
-                COUNT(*) AS held_count,SUM(amount) AS held_units,MIN(created) AS oldest_created
-                FROM execution_intents WHERE tenant=? AND (state='submitting' OR {AMBIGUOUS})
-                GROUP BY connection,asset ORDER BY oldest_created,connection""", (tenant,))]
+            attention, impact = self._connection_impact(db, tenant, observed)
             projected=[self.public(r,db) for r in rows]
-        return {"intents": projected, "counts": counts, "attention": attention, "mode": "sandbox",
-                "live_submission_implemented": False, "observed_at": observed}
+        return {"intents": projected, "counts": counts, "attention": attention, "connection_impact": impact,
+                "mode": "sandbox", "live_submission_implemented": False, "observed_at": observed}
+
+    @staticmethod
+    def _connection_impact(db, tenant, observed):
+        """Use the same admission rule as claim(), independent of the visible queue."""
+        rows = db.execute(f"""WITH paused AS (
+                SELECT DISTINCT connection FROM execution_intents
+                WHERE tenant=? AND (state='submitting' OR ({AMBIGUOUS}))
+            )
+            SELECT connection,asset,amount,created,CASE
+                WHEN state='submitting' AND lease_until>? THEN 'in_flight'
+                WHEN {AWAITING_SETTLEMENT} THEN 'awaiting_settlement'
+                WHEN state='prepared' THEN 'queued' ELSE 'unknown' END AS hold_kind
+            FROM execution_intents WHERE tenant=? AND state IN ('prepared','submitting','unknown')
+                AND connection IN (SELECT connection FROM paused)""", (tenant, observed, tenant))
+        groups = {}
+        for row in rows:
+            kinds = groups.setdefault((row["connection"], row["asset"]), {})
+            bucket = kinds.setdefault(row["hold_kind"], {"count": 0, "units": 0, "oldest_created": row["created"]})
+            bucket["count"] += 1
+            bucket["units"] += row["amount"]
+            bucket["oldest_created"] = min(bucket["oldest_created"], row["created"])
+        attention, impact = [], []
+        for (connection, asset), kinds in groups.items():
+            key = {"connection": connection, "asset": asset}
+            blockers = [kinds[k] for k in ("unknown", "in_flight") if k in kinds]
+            if blockers:
+                attention.append({**key, "held_count": sum(b["count"] for b in blockers),
+                    "held_units": sum(b["units"] for b in blockers), "oldest_created": min(b["oldest_created"] for b in blockers)})
+            impact.append({**key, "held_count": sum(b["count"] for b in kinds.values()),
+                "held_units": str(sum(b["units"] for b in kinds.values())),
+                "oldest_created": min(b["oldest_created"] for b in kinds.values()),
+                "holds": {kind: {**b, "units": str(b["units"])} for kind, b in kinds.items()}})
+        order = lambda r: (r["oldest_created"], r["connection"], r["asset"])
+        return sorted(attention, key=order), sorted(impact, key=order)
 
     def _expire(self, db, tenant):
         for row in db.execute("""SELECT id FROM execution_intents WHERE tenant=?

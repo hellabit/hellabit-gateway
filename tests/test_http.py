@@ -224,8 +224,16 @@ class HttpTests(unittest.TestCase):
         evidence={"control":"entity","reference":"reported-entity","document_hash":"a"*64,"expires":self.book.clock()+3600}
         self.assertEqual(self.post("readiness/evidence",evidence,owner=False)[0],403)
         self.assertEqual(self.post("readiness/evidence",{**evidence,"verified":True})[0],400)
-        self.assertFalse(self.post("readiness/evidence",evidence)[1]["externally_verified"])
+        report=json.loads(self.request("GET",self.base+"/readiness",headers=self.owner)[2])
+        profile={"profile_sha256":"b"*64,"expected_scope_sha256":report["evidence_scope"]["sha256"]}
+        self.assertEqual(self.post("readiness/evidence-profile",profile,owner=False)[0],403)
+        selected=self.post("readiness/evidence-profile",profile)[1]["scope"]["sha256"]
+        self.assertFalse(self.post("readiness/evidence",{**evidence,"scope_sha256":selected})[1]["externally_verified"])
+        revoke={k:evidence[k] for k in ("control","reference")}|{"reason":"withdrawn"}
+        self.assertEqual(self.post("readiness/revoke-evidence",revoke,owner=False)[0],403)
+        self.assertTrue(self.post("readiness/revoke-evidence",revoke)[1]["revoked"])
         packet=json.loads(self.request("GET",self.base+"/readiness/packet",headers=self.owner)[2])
+        self.assertEqual(packet["unresolved_controls"][0]["status"],"revoked")
         self.assertFalse(packet["operator_identity_included"])
         self.assertNotIn(self.tenant,json.dumps(packet));self.assertNotIn(self.key,json.dumps(packet))
         self.assertEqual(self.post("readiness/recovery-drill",{},owner=False)[0],403)

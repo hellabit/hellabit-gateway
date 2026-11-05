@@ -328,6 +328,50 @@ its checksum. It excludes recipient details and signing credentials.
 It is owner-only, refuses overwrite, and is an audit export rather than a tool
 that restores provider authority or replaces encrypted backups.
 
+## Keep readiness evidence current
+
+Run `python3 scripts/operate.py --tenant WORKSPACE_ID status` and use the
+reported `evidence_scope.sha256`. It covers the current source tree, workspace,
+connection drafts, chain and issuer configuration, bound sandbox provider
+generation and the latest declared operating profile. Ordinary balance and
+chain progress do not change this scope.
+
+Keep the actual operating profile private. Describe the deployment revision,
+operating entity, functions, jurisdictions, institution and account binding,
+and the identity and custody policies it relies on. When those terms change,
+hash the new profile and record only its digest:
+
+```sh
+python3 scripts/operate.py --tenant WORKSPACE_ID set-evidence-profile \
+  --profile-sha256 "$PROFILE_SHA256" --expected-scope-sha256 "$CURRENT_SCOPE_SHA256"
+```
+
+Use the returned scope when recording a document about it. The document stays
+with its reviewer; Hellabit stores its digest, an opaque reference and the
+expiry in Unix seconds.
+
+```sh
+python3 scripts/operate.py --tenant WORKSPACE_ID record-evidence \
+  --control program --reference approval-record-01 --document-hash "$DOCUMENT_SHA256" \
+  --expires "$EXPIRY_UNIX_SECONDS" --scope-sha256 "$REVIEWED_SCOPE_SHA256"
+```
+
+If the scope changes before a new record is saved, refresh the status and
+confirm the document still applies. Old records without a scope remain
+unscoped. A new record for the same control supersedes the older one; neither
+expiration nor withdrawal revives the older record. Withdraw a record as soon
+as its assumptions stop applying:
+
+```sh
+python3 scripts/operate.py --tenant WORKSPACE_ID revoke-evidence \
+  --control program --reference approval-record-01 --reason conditions-changed
+```
+
+The software detects changes to tracked inputs. The reviewer must report changes
+outside the gateway, such as a provider withdrawing consent or a new custody
+arrangement. Even a current scoped record is reported evidence only. The
+responsibility packet omits document hashes, references and profile details.
+
 ## Storage upgrades and request revocation
 
 Opening a supported older database runs the versioned storage migration in one

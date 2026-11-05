@@ -27,3 +27,5 @@
 }
 .command-record .fine-print { margin: 0; }
 .command-record .button-row { margin-top: .75rem; }
+.payout-impact{padding:16px 0;border-top:1px solid var(--line,#ccd4bf)}.payout-impact-total{display:flex;flex-wrap:wrap;align-items:baseline;justify-content:space-between;gap:6px 14px;overflow-wrap:anywhere}.payout-impact-total strong{font-size:20px}.payout-impact small{color:#51624d;font-size:12px}.payout-impact ul{list-style:none;padding:0;margin:12px 0 0}.payout-impact li{display:grid;grid-template-columns:minmax(0,1fr) max-content minmax(0,1fr);align-items:baseline;gap:6px 16px;padding:9px 0}.payout-impact li small{text-align:right}.payout-impact li strong{overflow-wrap:anywhere}
+@media(max-width:640px){.payout-impact li{grid-template-columns:minmax(0,1fr) minmax(0,1fr)}.payout-impact li strong{text-align:right}.payout-impact li small{grid-column:1/-1;text-align:left}}

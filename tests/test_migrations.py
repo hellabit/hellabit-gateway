@@ -80,7 +80,7 @@ class MigrationTests(unittest.TestCase):
                 self.assertFalse(funded['replayed'])
                 # The legacy writer uses the raw reference rather than the
                 # stored scoped key. Admission fails before it can post.
-                with self.assertRaisesRegex(sqlite3.OperationalError,'hellabit_write_epoch_11'):
+                with self.assertRaisesRegex(sqlite3.OperationalError,'hellabit_write_epoch_12'):
                     older.execute('INSERT INTO rail_events VALUES(?,?,?,?,?)',
                                   ('hb_legacy','bank','one-deposit','funding','0'*64))
                 self.assertTrue(SandboxBank(book).fund('hb_legacy','agent-01','CAD',100,'one-deposit')['replayed'])
