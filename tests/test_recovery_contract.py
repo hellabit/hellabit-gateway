@@ -14,7 +14,7 @@ from unittest.mock import patch
 from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric import rsa
 from hellabit.identity import Identity
-from hellabit.recovery import handover
+from hellabit.recovery import handover,resume_sealed
 from hellabit.backup import create,restore
 from hellabit.fixtures import SandboxProvider
 from hellabit.ledger import Ledger,Error
@@ -96,6 +96,27 @@ class RecoveryContractTests(unittest.TestCase):
         for path in (self.book.path,restored_path,self.root/('.hellabit-'+result['handover_id']+'.sqlite3')):path.unlink()
         command=('recover-sealed','--input',archive,'--key-file',key_path,'--provider-state',self.provider.path,'--output',output)
         self.provider.return_payment(external,'while-primary-lost',5)
+        stage=self.root/('.hellabit-sealed-'+result['handover_id']+'-v8.sqlite3')
+        with patch('hellabit.backup.time.time',return_value=1700000000),patch(
+                'hellabit.recovery._publish',side_effect=OSError('crash before destination publication')):
+            with self.assertRaises(OSError):resume_sealed(archive,key,self.provider,output)
+        self.assertFalse(output.exists())
+        with self.provider.db() as db:
+            first=db.execute('SELECT candidate_sha,activation_claimed FROM sealed_checkpoints').fetchone()
+            self.assertEqual(first['activation_claimed'],0)
+        # An existing staged file cannot replace the pinned bytes. A missing
+        # stage can be rebuilt only from the original authenticated archive.
+        with stage.open('ab') as file:file.write(b'changed-stage')
+        with self.assertRaisesRegex(Error,'sealed_candidate_changed'):
+            resume_sealed(archive,key,self.provider,output)
+        stage.unlink()
+        with patch('hellabit.recovery._activate',side_effect=OSError('crash after destination publication')):
+            with self.assertRaises(OSError):resume_sealed(archive,key,self.provider,output)
+        with self.provider.db() as db:
+            second=db.execute('SELECT candidate_sha,activation_claimed FROM sealed_checkpoints').fetchone()
+            self.assertNotEqual(second['candidate_sha'],first['candidate_sha'])
+            self.assertEqual(second['activation_claimed'],1)
+        stage.unlink()
         self.assertFalse(self.cli(self.book.path,*command)['result']['original_primary_required'])
         outcome=self.cli(output,'reconcile','--intent',payout['intent'])['result']
         self.assertEqual((outcome['returned_units'],outcome['net_paid_units']),(5,45))
@@ -179,7 +200,7 @@ class RecoveryContractTests(unittest.TestCase):
             older=Path(tmp)/'older.sqlite3'
             import sqlite3
             with Ledger(restored_path).db() as src,sqlite3.connect(older) as target:src.backup(target)
-            with sqlite3.connect(older) as db:db.execute("DELETE FROM settings WHERE key='recovery_quarantine'")
+            with Ledger(older).db() as db:db.execute("DELETE FROM settings WHERE key='recovery_quarantine'")
             output=self.root/'must-not-exist.sqlite3'
             with self.assertRaisesRegex(Error,'recovery_missing_authoritative_command'):
                 handover(Ledger(restored_path),Ledger(older),self.provider,output)

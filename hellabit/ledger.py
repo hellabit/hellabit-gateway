@@ -119,6 +119,35 @@ class Connection(sqlite3.Connection):
             self.close()
 
 
+def bind_gateway_writer(db):
+    """Register the storage protocol required by the ledger's write triggers."""
+    db.create_function("hellabit_write_epoch_8", 0, lambda: 8)
+    return db
+
+
+@contextmanager
+def ledger_writer_lock(path, *, exclusive=False):
+    """One-host writer fence, deliberately outside database snapshots."""
+    lock = path.with_name(path.name + '.writer.lock')
+    fd = os.open(lock, os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW, 0o600)
+    try:
+        info = os.fstat(fd)
+        if not stat.S_ISREG(info.st_mode) or info.st_uid != os.getuid() or stat.S_IMODE(info.st_mode) != 0o600:
+            raise Error('unsafe_writer_lock', 423)
+        until = time.monotonic() + 15
+        while True:
+            try:
+                fcntl.flock(fd, (fcntl.LOCK_EX if exclusive else fcntl.LOCK_SH) | fcntl.LOCK_NB)
+                break
+            except BlockingIOError:
+                if time.monotonic() >= until:
+                    raise Error('writer_fence_busy', 423) from None
+                time.sleep(0.01)
+        yield
+    finally:
+        os.close(fd)
+
+
 class Ledger:
     def __init__(self, path, clock=None, *, _recovery_candidate=False):
         require_safe_sqlite()
@@ -133,7 +162,7 @@ class Ledger:
         preflight(self.path,allow_pending=_recovery_candidate)
         old = os.umask(0o077)
         try:
-            with self.writer_lock():upgrade(self)
+            with self.writer_lock(exclusive=True):upgrade(self)
         finally:
             os.umask(old)
         os.chmod(self.path, 0o600)
@@ -145,25 +174,10 @@ class Ledger:
         db.execute("PRAGMA journal_mode=WAL")
         db.execute("PRAGMA synchronous=FULL")
         db.execute("PRAGMA busy_timeout=15000")
-        return db
+        return bind_gateway_writer(db)
 
-    @contextmanager
     def writer_lock(self,exclusive=False):
-        """One-host writer fence, deliberately outside database snapshots."""
-        path=self.path.with_name(self.path.name+'.writer.lock')
-        fd=os.open(path,os.O_RDWR|os.O_CREAT|os.O_NOFOLLOW,0o600)
-        try:
-            info=os.fstat(fd)
-            if not stat.S_ISREG(info.st_mode) or info.st_uid!=os.getuid() or stat.S_IMODE(info.st_mode)!=0o600:
-                raise Error('unsafe_writer_lock',423)
-            until=time.monotonic()+15
-            while True:
-                try:fcntl.flock(fd,(fcntl.LOCK_EX if exclusive else fcntl.LOCK_SH)|fcntl.LOCK_NB);break
-                except BlockingIOError:
-                    if time.monotonic()>=until:raise Error('writer_fence_busy',423) from None
-                    time.sleep(0.01)
-            yield
-        finally:os.close(fd)
+        return ledger_writer_lock(self.path, exclusive=exclusive)
 
     @contextmanager
     def transaction(self):

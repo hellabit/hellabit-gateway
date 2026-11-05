@@ -15,6 +15,22 @@ class IssuerLifecycleTests(unittest.TestCase):
 
     def tearDown(self):self.tmp.cleanup()
 
+    def test_unpaid_queue_keeps_old_claims_and_paid_history_separate(self):
+        self.issuer.attest(self.tenant,self.bank.deposit_event(
+            self.tenant,'issuer-reserve','USD',1000,'queue-deposit'))
+        self.issuer.mint(self.tenant,'agent-01',1_000_000,'queue-mint')
+        ids=[self.issuer.request_redemption(self.tenant,'agent-01',10000,f'claim-{n}')['request']
+             for n in range(22)]
+        debit=self.bank.event(self.tenant,'redemption:'+ids[-1],'USD',1,'last-paid','debit')
+        self.issuer.confirm_redemption(self.tenant,ids[-1],debit)
+        state=self.issuer.state(self.tenant)
+        first=state['claim_pages']['pending']
+        second=self.issuer.redemption_page(self.tenant,'pending',first['next_cursor'])
+        self.assertEqual(state['pending_redemption_count'],21)
+        self.assertEqual([row['id'] for row in first['claims']+second['claims']],ids[:-1])
+        self.assertEqual([row['id'] for row in state['claim_pages']['paid']['claims']],ids[-1:])
+        self.assertEqual(self.issuer.redemption(self.tenant,ids[0])['state'],'pending')
+
     def test_unused_old_balance_evidence_cannot_refresh_reserves(self):
         self.issuer.attest(self.tenant,self.bank.deposit_event(self.tenant,'issuer-reserve','USD',10000,'initial-deposit'))
         unused=self.bank.balance_event(self.tenant,'USD',10000,'unused-observation')

@@ -36,6 +36,7 @@ class Payouts:
             return {"id": payout, "state": "pending", "amount": amount, "asset": asset, "intent": intent}
 
     def sandbox_confirm(self, tenant, payout, reference):
+        """Legacy manual ledger exercise. Use Operations for recoverable settlement."""
         identifier(payout); identifier(reference)
         with self.ledger.transaction() as db:
             row = db.execute("SELECT * FROM payouts WHERE tenant=? AND id=?", (tenant, payout)).fetchone()

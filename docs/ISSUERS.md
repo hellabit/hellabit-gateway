@@ -10,7 +10,13 @@ operational principals and governance rather than assuming separate addresses
 mean separate organizations.
 
 An authorized attestor supplies an observed ceiling, observation time, expiry,
-monotonically increasing sequence and proof hash. A newer authenticated lower
+monotonically increasing observation sequence, covered settlement sequence and
+proof hash. The observed balance must account for every debit confirmed through
+the contract's current settlement sequence. A confirmation invalidates previous
+minting authority until new evidence covers the debit. The attestor must verify
+coverage against the bank's records before signing it.
+
+A newer authenticated lower
 balance is recorded even when it is below liabilities. It removes stale minting
 headroom immediately. An old or out-of-order observation cannot restore authority.
 A proof hash is not a bank statement. Attestor and administrator trust still matter.
@@ -20,8 +26,8 @@ A holder burns tokens to request redemption. Each claim is keyed by holder and
 request ID, so another holder cannot consume that identity. The unpaid claim
 continues to count as a liability. Only the enrolled settler confirms the exact
 holder and request, using independently verified, nonempty and unreused payout
-proof. A verified payout can close an existing claim during a shortfall; if it
-exceeds the last observed ceiling, fresh evidence is required for further issuance.
+proof. A verified payout can close an existing claim during a shortfall. It
+reduces the ceiling and advances the settlement sequence.
 
 Real issuance needs legal operator identity, reserve ownership and segregation,
 custody arrangements, redemption rights, liquidity and reconciliation policies,

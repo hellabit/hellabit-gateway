@@ -167,8 +167,41 @@ class EventIndexer:
     def events(self, tenant, binding, *, finalized_only=True):
         with self.book.db() as db:
             self._binding(db, tenant, binding)
-            return [dict(r) for r in db.execute("""SELECT * FROM chain_events WHERE binding=? AND canonical=1
-                AND (?=0 OR finalized=1) ORDER BY rowid LIMIT 1000""", (binding, int(finalized_only)))]
+            rows=db.execute("""SELECT * FROM chain_events WHERE binding=? AND canonical=1
+                AND (?=0 OR finalized=1) ORDER BY rowid LIMIT 1001""", (binding, int(finalized_only))).fetchall()
+            if len(rows)>1000:raise Error('chain_event_page_required',409)
+            return [dict(row) for row in rows]
+
+    def event_page(self,tenant,binding,*,cursor=None,limit=1000):
+        """Read a bounded page at a fixed finalized block, with a stable order."""
+        if type(limit) is not int or not 1<=limit<=1000:
+            raise Error('invalid_event_page_limit',400)
+        with self.book.db() as db:
+            db.execute('BEGIN')
+            state=self._binding(db,tenant,binding)
+            through=state['finalized']
+            position=(-1,-1,'')
+            if cursor is not None:
+                try:
+                    anchor,height,log,transaction=cursor.split('/')
+                    through,height,log=(integer(int(value)) for value in (anchor,height,log))
+                    position=(height,log,hash32(transaction))
+                except (AttributeError,ValueError,Error):
+                    raise Error('invalid_chain_event_cursor',400) from None
+                if height>through or through>state['finalized']:
+                    raise Error('invalid_chain_event_cursor',400)
+            rows=db.execute("""SELECT e.*,b.height FROM chain_blocks b JOIN chain_events e
+                ON e.binding=b.binding AND e.block_hash=b.hash
+                WHERE b.binding=? AND b.canonical=1 AND b.finalized=1 AND e.canonical=1 AND e.finalized=1
+                  AND b.height<=? AND (b.height,e.log_index,e.tx_hash)>(?,?,?)
+                ORDER BY b.height,e.log_index,e.tx_hash LIMIT ?""",
+                (binding,through,*position,limit+1)).fetchall()
+            page=[dict(row) for row in rows[:limit]]
+            last=page[-1] if page else None
+            next_cursor=(f"{through}/{last['height']}/{last['log_index']}/{last['tx_hash']}"
+                         if len(rows)>limit else None)
+            return {'events':page,'through_block':through,'next_cursor':next_cursor,
+                    'complete':next_cursor is None,'halted':state['halted']}
 
     def sync(self, tenant, binding, rpc, max_blocks=20):
         identifier(binding)

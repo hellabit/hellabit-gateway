@@ -216,6 +216,11 @@ class Handler(BaseHTTPRequestHandler):
                     self._reply(book.operation(tenant, tail.split("/")[1])); return
                 if tail.startswith("deliveries/") and tail.count("/") == 1:
                     self._reply(book.delivery(tenant, tail.split("/")[1])); return
+                if tail.startswith('issuer/claims/') and tail.count('/') in (2,3):
+                    parts=tail.split('/')
+                    self._reply(issuer.redemption_page(tenant,parts[2],parts[3] if len(parts)==4 else None));return
+                if tail.startswith('issuer/redemption/') and tail.count('/')==2:
+                    self._reply(issuer.redemption(tenant,tail.split('/')[2]));return
                 raise Error("route_not_found", 404)
             body = self._body()
             principal=self._authorize(tenant,owner_only=owner_only)
@@ -304,8 +309,12 @@ class Handler(BaseHTTPRequestHandler):
                 fields(body,["control","reference","document_hash","expires"])
                 result=Readiness(book).record(tenant,**body)
             elif tail.startswith("payouts/") and tail.count("/") == 2 and tail.endswith("/confirm"):
-                fields(body, ["payment_reference"])
+                fields(body, ["payment_reference"], ["manual_test_only"])
+                if body.get("manual_test_only") is not True:
+                    raise Error("use_test_provider_to_settle",409)
                 result = Payouts(book).sandbox_confirm(tenant, tail.split("/")[1], body["payment_reference"])
+                result["independent_provider_receipt"] = False
+                result["handover_compatible"] = False
             elif tail.startswith("enroll/") and tail.count("/") == 1:
                 result = book.prepare_enrollment(tenant, tail.split("/")[1], body)
             else: raise Error("route_not_found", 404)

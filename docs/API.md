@@ -119,6 +119,8 @@ a storage upgrade.
 
 Agent purchase requests require a current, owner-configured policy. Monetary
 limits and any approval are consumed atomically with the original purchase key.
+These limits apply to the named agent credential. The workspace merchant has
+its own purchase authority within the customer's available balance.
 `agent_spending_policy_required`, `agent_daily_limit_exceeded`, and
 `exact_agent_purchase_approval_required` distinguish the corrective action.
 The [operator commands](OPERATIONS.md#agent-purchase-authority) set policy and

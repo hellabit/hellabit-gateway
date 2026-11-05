@@ -73,6 +73,34 @@ class MeterTests(unittest.TestCase):
             self.meter.record(self.tenant,"managed","new-backdated")
         self.assertTrue(self.meter.record(self.tenant,"managed","original")["replayed"])
 
+    def test_monthly_base_fee_requires_empty_periods_and_can_fill_a_legacy_gap(self):
+        self.meter.configure(self.tenant,'base','CAD',0,base_minor=500)
+        self.now=int(datetime(2027,2,15,tzinfo=timezone.utc).timestamp())
+        with self.assertRaisesRegex(Error,'earlier_base_period_must_close_first'):
+            self.meter.close(self.tenant,'base','2026-12')
+        self.meter.close(self.tenant,'base','2026-11')
+        with self.assertRaisesRegex(Error,'earlier_base_period_must_close_first'):
+            self.meter.close(self.tenant,'base','2027-01')
+        with self.book.db() as db:
+            db.execute("INSERT INTO usage_invoices VALUES(?,?,?,'legacy-invoice','CAD',0,0,0,500,500,0,?)",
+                       (self.tenant,'base','2027-01',self.now))
+        december=self.meter.close(self.tenant,'base','2026-12')
+        self.assertEqual(december['due_minor'],500)
+        self.assertTrue(self.meter.close(self.tenant,'base','2027-01')['replayed'])
+
+    def test_admission_prevents_new_overage_and_legacy_amount_needs_exact_close(self):
+        self.meter.configure(self.tenant,'limit','CAD',10000,base_minor=10**12)
+        with self.assertRaisesRegex(Error,'usage_amount_limit'):
+            self.meter.record(self.tenant,'limit','at-limit')
+        with self.book.db() as db:
+            db.execute('INSERT INTO usage_events VALUES(?,?,?,?,?,?,?,?)',
+                       (self.tenant,'legacy-key','limit','2026-11',1,10000,'legacy-request',self.now))
+        self.now=stamp(12)
+        with self.assertRaisesRegex(Error,'invoice_amount_limit'):
+            self.meter.close(self.tenant,'limit','2026-11')
+        self.assertTrue(self.meter.preview(self.tenant,'limit','2026-11')['legacy_overage_requires_exact_approval'])
+        self.assertEqual(self.meter.close(self.tenant,'limit','2026-11',expected_due_minor=10**12+1)['due_minor'],10**12+1)
+
     def test_currency_terms_and_tenant_scope_are_enforced(self):
         with self.assertRaisesRegex(Error,"billing_plan_immutable"):
             self.meter.configure(self.tenant,"managed","CAD",1000)

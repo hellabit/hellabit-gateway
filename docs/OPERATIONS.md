@@ -86,7 +86,12 @@ checkpoint, including after losing the original primary and its candidate:
 python3 scripts/operate.py recover-sealed --input PATH --key-file KEY_PATH --provider-state PROVIDER_PATH --output SAME_DESTINATION
 ```
 
-The store pins the archive hash, destination and fence. A consumed checkpoint
+The store pins the archive hash, destination and fence. If recovery is interrupted
+before publication and its staging file disappears, the same command can
+reconstruct it from the authenticated archive and recheck provider coverage.
+An existing candidate or a published destination must match its exact byte
+fingerprint. The same command can finish a pending activation from the pinned
+destination when the staging file is absent. A consumed checkpoint
 cannot recreate a lost active primary from stale history. This profile does not
 recover changes missing from an unplanned crash after activation. No live bank
 credential revocation, cross-host writer fence or production promotion is provided.
@@ -125,7 +130,12 @@ retains its original month even across a month boundary.
 
 Close a completed UTC month with `usage close --plan api-basic --period YYYY-MM`.
 The current month cannot close. Earlier unbilled usage must close first. Optional
-`--base-minor` is a monthly base fee in cents. Invoices never debit a customer,
+`--base-minor` is a monthly base fee in cents starting in the UTC month the
+plan was recorded. Close every active month in order, including empty months.
+An empty gap from an older release can close if it preserves the already
+recorded carry. New usage must fit the invoice limit. For an older overage,
+preview the exact amount and pass `--expected-due-minor` to close that amount.
+Invoices never debit a customer,
 collect a payment or establish revenue. Refund/credit allocation for an actual
 commercial usage service needs its own agreed policy before collection.
 
@@ -203,9 +213,13 @@ reference only in the private file. There is no key discovery or paid signup.
 python3 scripts/operate.py --tenant WORKSPACE_ID index bind --config .private/chain.json
 python3 scripts/operate.py --tenant WORKSPACE_ID index status --config .private/chain.json
 python3 scripts/operate.py --tenant WORKSPACE_ID index sync --config .private/chain.json --max-blocks 20
+python3 scripts/operate.py --tenant WORKSPACE_ID index events --config .private/chain.json
 ```
 
-Binding and status do no network I/O. Sync performs bounded read-only RPC calls,
+Binding, status and event pages do no network I/O. Continue an event page with
+`--cursor NEXT_CURSOR`. The cursor keeps the first page's finalized block
+boundary. The result reports when that boundary is complete.
+Sync performs bounded read-only RPC calls,
 checks chain ID, processes contract-scoped ERC-20 Transfer logs and persists a
 cursor. It does not sign/broadcast, credit customer balances or certify reserves.
 All resolved endpoint addresses must be public and the connection pins a resolved
@@ -282,10 +296,15 @@ use the returned version for a change.
 ```sh
 python3 scripts/operate.py --tenant WORKSPACE_ID agent-policy set --principal AGENT_ID --file POLICY_JSON --expected-version 0
 python3 scripts/operate.py --tenant WORKSPACE_ID agent-policy approve --principal AGENT_ID --quote QUOTE_ID --key ORIGINAL_PURCHASE_KEY
+python3 scripts/operate.py --tenant WORKSPACE_ID agent-policy renew --principal AGENT_ID --quote QUOTE_ID --key ORIGINAL_PURCHASE_KEY --expected-expiry EXPIRED_TIMESTAMP
+python3 scripts/operate.py --tenant WORKSPACE_ID agent-policy adopt --principal AGENT_ID --operation HELD_OPERATION_ID
 ```
 
 An approval binds the exact quote, original purchase key, policy version and grant
 generation. It expires within five minutes and is consumed with the reservation.
+An approval replay reports whether it is current, expired or used. Renew only
+an unused expired approval by supplying the recorded expiry. The original
+quote, purchase key and grant stay bound to the new expiry.
 Reservations count against the gross UTC daily budget, including later releases or
 refunds; replaying the original command does not count twice. An agent cannot run
 another caller's reservation or execute one under a superseded policy or grant.
@@ -294,3 +313,22 @@ Version 7 backfills account positions atomically from existing postings. Interna
 reconciliation compares the cached positions and agent budgets with authoritative
 records. API rate counters use a separate local store; this does not change grant
 or settlement authority.
+
+Before the version 8 upgrade, stop old workers and finish any in-flight payout
+attempts using the existing runtime. The migration refuses a submitting intent.
+After cutover, SQLite rejects writes from already-open older gateways. If both
+legacy and scoped funding records exist for the same movement, migration stops
+for comparison with the provider record. The operator must resolve the accounting
+before upgrading. Internal balance checks alone cannot establish external uniqueness.
+
+A reservation without an agent authority record remains on its existing hold.
+The workspace owner can complete the original purchase or release it using
+**Paid work** after checking its outcome. The owner can also adopt a still-held
+purchase for an active agent on the same customer account. Adoption applies
+the current policy and budget to the existing hold and records that decision.
+
+Run test payouts through the recovery queue or the payout action in **Paid work**.
+Both use the independent test provider, so their acceptance receipts can be
+checked during handover. The legacy loopback payout-confirmation endpoint
+requires explicit `manual_test_only: true`. Its response marks that exercise
+as outside the independent provider recovery profile.

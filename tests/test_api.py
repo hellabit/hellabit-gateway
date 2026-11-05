@@ -21,6 +21,37 @@ from hellabit.rails import SandboxBank
 ISSUER,AUDIENCE="https://identity.example.invalid","hellabit-api"
 
 class ApiTests(unittest.IsolatedAsyncioTestCase):
+    def test_expired_approval_and_legacy_reservation_have_explicit_owner_paths(self):
+        from hellabit.agent_policy import AgentPolicy
+        from hellabit.ledger import Error
+        now=int(time.time());self.book.clock=lambda:now
+        SandboxBank(self.book).fund(self.tenant,'agent-01','CAD',1000,'legacy-agent-funding')
+        quote=self.book.create_quote(self.tenant,'CAD',35,1)['quote']
+        original=self.book.reserve(self.tenant,'agent-01',quote,'legacy-held-purchase')
+        key=self.book.issue_agent_key(self.tenant,'agent-01')['api_key']
+        actor=self.book.principal(key)
+        policy=AgentPolicy(self.book)
+        policy.configure(self.tenant,actor['id'],{'asset':'CAD','resource':'report','recipient':'workspace-merchant',
+            'per_purchase':100,'daily':200,'approval_above':0,'expires':now+1800},0)
+        with self.assertRaisesRegex(Error,'agent_reservation_not_owned'):
+            self.book.reserve(self.tenant,'agent-01',quote,'legacy-held-purchase',actor=actor)
+        self.assertTrue(policy.adopt(self.tenant,actor['id'],original['id'])['adopted'])
+        same=self.book.reserve(self.tenant,'agent-01',quote,'legacy-held-purchase',actor=actor)
+        self.assertEqual(same['id'],original['id'])
+        self.assertTrue(same['replayed'])
+        self.book.run_report(self.tenant,same['id'],actor=actor)
+        approval=policy.approve(self.tenant,actor['id'],quote,'later-command')
+        now+=301
+        expired=policy.approve(self.tenant,actor['id'],quote,'later-command')
+        self.assertEqual((expired['approved'],expired['status'],expired['expires']),(False,'expired',approval['expires']))
+        with self.assertRaisesRegex(Error,'approval_renewal_requires_exact_expired_unused_approval'):
+            policy.approve(self.tenant,actor['id'],quote,'later-command',renew_expiry=approval['expires']-1)
+        renewed=policy.approve(self.tenant,actor['id'],quote,'later-command',renew_expiry=approval['expires'])
+        self.assertTrue(renewed['renewed'])
+        self.book.reserve(self.tenant,'agent-01',quote,'later-command',actor=actor)
+        self.assertEqual(policy.approve(self.tenant,actor['id'],quote,'later-command')['status'],'used')
+        self.assertTrue(self.book.reconcile(self.tenant)['ok'])
+
     async def test_agent_policy_gates_concurrent_budgets_and_exact_approvals(self):
         root=Path(__file__).resolve().parents[1];base='/api/v1/workspaces/'+self.tenant
         for asset in ('CAD','USD'):SandboxBank(self.book).fund(self.tenant,'agent-01',asset,500,'agent-funding')

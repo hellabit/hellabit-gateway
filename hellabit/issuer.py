@@ -35,7 +35,9 @@ class Issuer:
         data = dict(row)
         data["asset"] = "issued:" + tenant
         data["supply"] = -self.ledger._balance(db, tenant, data["asset"], "issuer-liability")
-        data["pending_redemptions"] = db.execute("SELECT COALESCE(SUM(amount),0) FROM redemptions WHERE tenant=? AND state='pending'", (tenant,)).fetchone()[0]
+        totals=db.execute("""SELECT COALESCE(SUM(amount),0),COUNT(*) FROM redemptions
+            WHERE tenant=? AND state='pending'""",(tenant,)).fetchone()
+        data["pending_redemptions"],data["pending_redemption_count"]=totals
         data["liabilities"] = data["supply"] + data["pending_redemptions"]
         latest=db.execute('''SELECT o.reference,o.balance,o.observed_at,o.sequence,a.booked_units,a.liability_units,a.outcome
             FROM reserve_observations o JOIN reserve_assessments a ON a.tenant=o.tenant AND a.reference=o.reference
@@ -52,6 +54,7 @@ class Issuer:
         data["mode"] = "sandbox"
         data["real_reserves_verified"] = False
         data["redemptions"] = [dict(x) for x in db.execute("SELECT id,customer,source,amount,state,payment_reference FROM redemptions WHERE tenant=? ORDER BY rowid DESC LIMIT 20", (tenant,))]
+        data["claim_pages"]={status:self._redemption_page(db,tenant,status,None) for status in ('pending','paid')}
         return data
 
     def state(self, tenant):
@@ -65,6 +68,28 @@ class Issuer:
             row=db.execute('SELECT id,customer,source,amount,state,payment_reference FROM redemptions WHERE tenant=? AND id=?',(tenant,request_id)).fetchone()
             if not row:raise Error('redemption_not_found',404)
             return dict(row)
+
+    @staticmethod
+    def _redemption_page(db,tenant,status,cursor):
+        # Pending claims are handled oldest first. Completed claims have a
+        # separate, newest-first history and never occupy the pending queue.
+        order,comparison=('ASC','>') if status=='pending' else ('DESC','<')
+        rows=db.execute(f"""SELECT rowid AS position,id,customer,source,amount,state,payment_reference
+            FROM redemptions WHERE tenant=? AND state=? AND (? IS NULL OR rowid{comparison}?)
+            ORDER BY rowid {order} LIMIT 21""",(tenant,status,cursor,cursor)).fetchall()
+        return {'claims':[{k:row[k] for k in row.keys() if k!='position'} for row in rows[:20]],
+                'next_cursor':str(rows[19]['position']) if len(rows)>20 else None}
+
+    def redemption_page(self,tenant,status,cursor=None):
+        if status not in ('pending','paid'):raise Error('invalid_redemption_queue',400)
+        if cursor is not None:
+            if not isinstance(cursor,str) or not re.fullmatch(r'[1-9][0-9]{0,18}',cursor) or int(cursor)>2**63-1:
+                raise Error('invalid_redemption_cursor',400)
+            cursor=int(cursor)
+        with self.ledger.db() as db:
+            db.execute('BEGIN')
+            self.ledger.tenant(db,tenant)
+            return self._redemption_page(db,tenant,status,cursor)
 
     def configure(self, tenant, name, symbol, currency):
         if not isinstance(name, str) or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9 .'-]{1,59}", name):

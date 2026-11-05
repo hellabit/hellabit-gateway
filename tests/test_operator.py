@@ -86,3 +86,15 @@ class OperatorTests(unittest.TestCase):
         self.assertEqual(result["network_requests"],0)
         result=self.command("index","status","--config",config)["result"]
         self.assertEqual(result["cursor"],9);self.assertNotIn("endpoint",result)
+
+    def test_mixed_case_binding_reaches_sync_without_changing_contract_identity(self):
+        terms={'binding':'mixed-address','chain_id':8453,'contract':'0x'+'aB'*20,
+               'start_block':10,'endpoint':'http://rpc.example.invalid','allowed_hosts':['rpc.example.invalid']}
+        config=self.private('mixed.json',terms)
+        self.assertTrue(self.command('index','bind','--config',config)['result']['bound'])
+        # An unsafe URL cannot create a connection. Reaching that check
+        # proves sync accepted the same mixed-case contract binding.
+        self.assertEqual(self.command('index','sync','--config',config,good=False)['error'],'invalid_rpc_binding')
+        terms['contract']='0x'+'aC'*20
+        config=self.private('mixed.json',terms)
+        self.assertEqual(self.command('index','sync','--config',config,good=False)['error'],'chain_binding_immutable')

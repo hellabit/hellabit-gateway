@@ -18,6 +18,7 @@ contract AttestedStablecoin is ERC20, AccessControlDefaultAdminRules, Pausable {
     uint64 public reserveValidUntil;
     uint64 public reserveObservedAt;
     uint64 public reserveSequence;
+    uint256 public settlementSequence;
     uint256 public pendingRedemptions;
     mapping(bytes32 => bool) public usedMintRequests;
     mapping(bytes32 => bool) public usedAttestations;
@@ -26,11 +27,11 @@ contract AttestedStablecoin is ERC20, AccessControlDefaultAdminRules, Pausable {
     struct Redemption { address holder; uint256 amount; bool paid; }
     mapping(bytes32 => Redemption) public redemptions;
 
-    event ReserveAttested(bytes32 indexed proofHash, uint256 ceiling, uint64 validUntil);
+    event ReserveAttested(bytes32 indexed proofHash, uint256 ceiling, uint64 validUntil, uint256 coveredSettlements);
     event ReserveDeficitObserved(bytes32 indexed proofHash, uint256 observed, uint256 liabilities);
     event Issued(bytes32 indexed requestId, address indexed holder, uint256 amount);
     event RedemptionRequested(bytes32 indexed claimId, address indexed holder, bytes32 indexed requestId, uint256 amount);
-    event RedemptionPaid(bytes32 indexed claimId, bytes32 indexed paymentProof);
+    event RedemptionPaid(bytes32 indexed claimId, bytes32 indexed paymentProof, uint256 settlement);
     event FreezeChanged(address indexed holder, bool frozen);
 
     constructor(string memory name_, string memory symbol_, bytes32 issuer_, bytes3 currency_, address admin)
@@ -41,16 +42,19 @@ contract AttestedStablecoin is ERC20, AccessControlDefaultAdminRules, Pausable {
         issuerId = issuer_; referenceCurrency = currency_;
     }
     function decimals() public pure override returns (uint8) { return 6; }
-    function attestReserve(uint256 ceiling, uint64 observedAt, uint64 validUntil, uint64 sequence, bytes32 proofHash)
+    /// @param coveredSettlements Latest confirmed debit included in the external balance.
+    function attestReserve(uint256 ceiling, uint64 observedAt, uint64 validUntil, uint64 sequence,
+        uint256 coveredSettlements, bytes32 proofHash)
         external onlyRole(ATTESTOR_ROLE) {
         require(proofHash != bytes32(0) && !usedAttestations[proofHash], "attestation replay");
         require(observedAt <= block.timestamp && block.timestamp - observedAt <= 5 minutes, "observation stale");
         require(sequence > reserveSequence && observedAt >= reserveObservedAt, "observation order");
+        require(coveredSettlements == settlementSequence, "settlement coverage");
         require(validUntil > block.timestamp && validUntil <= uint256(observedAt) + 1 days, "attestation expiry");
         usedAttestations[proofHash] = true;
         reserveCeiling = ceiling; reserveValidUntil = validUntil;
         reserveObservedAt = observedAt; reserveSequence = sequence;
-        emit ReserveAttested(proofHash, ceiling, validUntil);
+        emit ReserveAttested(proofHash, ceiling, validUntil, coveredSettlements);
         uint256 liabilities = totalSupply() + pendingRedemptions;
         if (ceiling < liabilities) emit ReserveDeficitObserved(proofHash, ceiling, liabilities);
     }
@@ -78,9 +82,9 @@ contract AttestedStablecoin is ERC20, AccessControlDefaultAdminRules, Pausable {
         require(item.holder != address(0) && !item.paid && paymentProof != bytes32(0) && !usedPayoutProofs[paymentProof], "redemption state");
         usedPayoutProofs[paymentProof] = true;
         item.paid = true; pendingRedemptions -= item.amount;
-        if (item.amount > reserveCeiling) { reserveCeiling = 0; reserveValidUntil = 0; }
-        else reserveCeiling -= item.amount;
-        emit RedemptionPaid(claimId, paymentProof);
+        reserveCeiling = item.amount >= reserveCeiling ? 0 : reserveCeiling - item.amount;
+        reserveValidUntil = 0;
+        emit RedemptionPaid(claimId, paymentProof, ++settlementSequence);
     }
     function setFrozen(address holder, bool value) external onlyRole(COMPLIANCE_ROLE) {
         require(holder != address(0), "holder required"); frozen[holder] = value;

@@ -41,6 +41,24 @@ class IndexerTests(unittest.TestCase):
 
     def ingest(self, n): return self.index.ingest(self.tenant,"watched-usdc",n,h(n),h(n-1),[event(n)])
 
+    def test_finalized_page_walks_beyond_one_thousand_at_the_original_boundary(self):
+        binding='watched-usdc'
+        logs=[{**event(10),'tx_hash':h(2000+i),'log_index':i} for i in range(1000)]
+        self.index.ingest(self.tenant,binding,10,h(10),h(9),logs)
+        self.ingest(11)
+        self.index.finalize(self.tenant,binding,11,h(11))
+        with self.assertRaisesRegex(Error,'chain_event_page_required'):
+            self.index.events(self.tenant,binding)
+        first=self.index.event_page(self.tenant,binding)
+        self.assertEqual(len(first['events']),1000)
+        self.assertFalse(first['complete'])
+        self.ingest(12)
+        self.index.finalize(self.tenant,binding,12,h(12))
+        second=self.index.event_page(self.tenant,binding,cursor=first['next_cursor'])
+        self.assertEqual([row['height'] for row in second['events']],[11])
+        self.assertEqual(second['through_block'],11)
+        self.assertTrue(second['complete'])
+
     def test_idempotent_block_and_log_conflicts_preserve_original(self):
         self.ingest(10)
         self.assertTrue(self.ingest(10)["replayed"])
